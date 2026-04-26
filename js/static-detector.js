@@ -6,53 +6,43 @@
 (function() {
     'use strict';
 
-    // Global error handlers for debugging
-    window.addEventListener('error', function(e) {
-        console.error('[BotDetector] Global error caught:', e.error, 'at', e.filename, ':', e.lineno);
-    });
-    window.addEventListener('unhandledrejection', function(e) {
-        console.error('[BotDetector] Unhandled promise rejection:', e.reason);
-    });
-
-    console.log('[BotDetector] static-detector.js loaded');
-
     const shared = window.BotDetectorShared;
 
     /**
      * Run all static detection tests
      */
     async function runStaticDetection() {
-        console.log('[BotDetector] Starting static detection tests...');
         const results = {};
-        const errors = {};
+        const log = (name, value) => {
+            const display = value === false || value === null || value === undefined
+                ? 'PASS'
+                : (value === true ? 'FAIL' : `FAIL — ${value.description || value.reason || JSON.stringify(value).slice(0, 80)}`);
+            console.log(`[${name}] ${display}`);
+        };
 
-        // Helper to run test with error catching
         function runTest(name, testFn) {
             try {
-                console.log(`[BotDetector] Running test: ${name}`);
-                const result = testFn();
-                console.log(`[BotDetector] Test ${name} completed:`, result);
-                return result;
+                const r = testFn();
+                log(name, r);
+                return r;
             } catch (e) {
-                console.error(`[BotDetector] Test ${name} failed:`, e);
-                errors[name] = e.message;
-                return { error: e.message, description: `Test failed: ${e.message}` };
+                console.error(`[${name}] ERROR: ${e.message}`);
+                return false;
             }
         }
 
-        // Helper to run async test with error catching
         async function runAsyncTest(name, testFn) {
             try {
-                console.log(`[BotDetector] Running async test: ${name}`);
-                const result = await testFn();
-                console.log(`[BotDetector] Async test ${name} completed:`, result);
-                return result;
+                const r = await testFn();
+                log(name, r);
+                return r;
             } catch (e) {
-                console.error(`[BotDetector] Async test ${name} failed:`, e);
-                errors[name] = e.message;
-                return { error: e.message, description: `Test failed: ${e.message}` };
+                console.error(`[${name}] ERROR: ${e.message}`);
+                return false;
             }
         }
+
+        console.log(`[BotDetector] Starting detection — ${navigator.userAgent.slice(0, 80)}`);
 
         // Sync tests
         results.hasBotUserAgent = runTest('hasBotUserAgent', () => shared.checkBotUserAgent());
@@ -72,32 +62,27 @@
         results.isIframeOverridden = runTest('isIframeOverridden', () => shared.checkIframeOverridden());
         results.hasHighHardwareConcurrency = runTest('hasHighHardwareConcurrency', () => shared.checkHighHardwareConcurrency());
         results.hasHeadlessChromeDefaultScreenResolution = runTest('hasHeadlessChromeDefaultScreenResolution', () => shared.checkHeadlessResolution());
+        results.hasMissingBrowserChrome = runTest('hasMissingBrowserChrome', () => shared.checkMissingBrowserChrome());
+        results.hasScreenAvailabilityAnomaly = runTest('hasScreenAvailabilityAnomaly', () => shared.checkScreenAvailability());
+        results.hasTouchInconsistency = runTest('hasTouchInconsistency', () => shared.checkTouchInconsistency());
+        results.hasNavigatorIntegrityViolation = runTest('hasNavigatorIntegrityViolation', () => shared.checkNavigatorIntegrity());
 
-        // Async tests
+        // Async tests (worker runs once; both checks share the same worker result)
         results.hasInconsistentWorkerValues = await runAsyncTest('hasInconsistentWorkerValues', () => shared.checkInconsistentWorkerValues());
         results.isAutomatedWithCDPInWebWorker = await runAsyncTest('isAutomatedWithCDPInWebWorker', () => shared.checkAutomatedWithCDPInWorker());
-        results.hasSuspiciousWeakSignals = runTest('hasSuspiciousWeakSignals', () => shared.analyzeWeakSignals());
 
-        // New tests from device_info.min.js analysis
+        results.hasSuspiciousWeakSignals = runTest('hasSuspiciousWeakSignals', () => shared.analyzeWeakSignals());
         results.isAutomatedViaStackTrace = runTest('isAutomatedViaStackTrace', () => shared.checkCDPViaStackTrace());
         results.hasCanvasFingerprintIssue = runTest('hasCanvasFingerprintIssue', () => shared.checkCanvasFingerprint());
         results.hasAudioFingerprintIssue = await runAsyncTest('hasAudioFingerprintIssue', () => shared.checkAudioFingerprint());
 
-        // Log summary
-        console.log('[BotDetector] All tests completed');
-        console.log('[BotDetector] Results:', results);
-        if (Object.keys(errors).length > 0) {
-            console.error('[BotDetector] Errors encountered:', errors);
-        }
-
-        // Add debug info to results
         results._debug = {
             userAgent: navigator.userAgent,
             timestamp: new Date().toISOString(),
-            errors: errors,
-            testCount: Object.keys(results).length - 1 // excluding _debug
+            testCount: Object.keys(results).length - 1
         };
 
+        console.log(`[BotDetector] Detection complete — ${results._debug.testCount} tests run`);
         return results;
     }
 
@@ -105,13 +90,11 @@
      * Display results in the container
      */
     function displayResults(results, container) {
-        console.log('[BotDetector] displayResults called with', Object.keys(results).length, 'results');
         container.innerHTML = '';
 
         const resultsGrid = document.createElement('div');
         resultsGrid.className = 'results-grid';
 
-        // Add all result items
         const resultItems = [
             { label: 'hasBotUserAgent', value: results.hasBotUserAgent },
             { label: 'hasWebdriverTrue', value: results.hasWebdriverTrue },
@@ -132,36 +115,29 @@
             { label: 'hasInconsistentWorkerValues', value: results.hasInconsistentWorkerValues !== false, details: results.hasInconsistentWorkerValues },
             { label: 'hasHighHardwareConcurrency', value: results.hasHighHardwareConcurrency !== false, details: results.hasHighHardwareConcurrency },
             { label: 'hasHeadlessChromeDefaultScreenResolution', value: results.hasHeadlessChromeDefaultScreenResolution !== false, details: results.hasHeadlessChromeDefaultScreenResolution },
+            { label: 'hasMissingBrowserChrome', value: results.hasMissingBrowserChrome !== false, details: results.hasMissingBrowserChrome },
+            { label: 'hasScreenAvailabilityAnomaly', value: results.hasScreenAvailabilityAnomaly !== false, details: results.hasScreenAvailabilityAnomaly },
+            { label: 'hasTouchInconsistency', value: results.hasTouchInconsistency !== false, details: results.hasTouchInconsistency },
+            { label: 'hasNavigatorIntegrityViolation', value: results.hasNavigatorIntegrityViolation !== false, details: results.hasNavigatorIntegrityViolation },
             { label: 'hasSuspiciousWeakSignals', value: results.hasSuspiciousWeakSignals !== false, details: results.hasSuspiciousWeakSignals },
             { label: 'isAutomatedViaStackTrace', value: results.isAutomatedViaStackTrace !== false, details: results.isAutomatedViaStackTrace, showLikelySource: true },
             { label: 'hasCanvasFingerprintIssue', value: results.hasCanvasFingerprintIssue !== false, details: results.hasCanvasFingerprintIssue },
             { label: 'hasAudioFingerprintIssue', value: results.hasAudioFingerprintIssue !== false, details: results.hasAudioFingerprintIssue },
         ];
 
-        let processedCount = 0;
         for (const item of resultItems) {
-            try {
-                const isBoolean = typeof item.value === 'boolean';
-                const hasDetails = item.details !== undefined && item.details !== false;
-                console.log(`[BotDetector] Processing ${item.label}: value=${item.value}, isBoolean=${isBoolean}, hasDetails=${hasDetails}`);
-                const element = shared.createResultElement(
-                    item.label,
-                    item.value,
-                    isBoolean,
-                    hasDetails ? item.details : null,
-                    item.showLikelySource
-                );
-                resultsGrid.appendChild(element);
-                processedCount++;
-            } catch (e) {
-                console.error(`[BotDetector] Error processing result item ${item.label}:`, e);
-            }
+            const isBoolean = typeof item.value === 'boolean';
+            const hasDetails = item.details !== undefined && item.details !== false;
+            resultsGrid.appendChild(shared.createResultElement(
+                item.label,
+                item.value,
+                isBoolean,
+                hasDetails ? item.details : null,
+                item.showLikelySource
+            ));
         }
-        console.log(`[BotDetector] Processed ${processedCount}/${resultItems.length} result items`);
 
         container.appendChild(resultsGrid);
-
-        // Update overall status
         updateOverallStatus(results);
     }
 
@@ -172,46 +148,55 @@
         const statusContainer = document.getElementById('overall-status');
         if (!statusContainer) return;
 
-        // Count positive detections
         let botIndicators = 0;
-        const criticalTests = [
+
+        // Boolean tests — truthy value means detected
+        const booleanTests = [
+            'hasBotUserAgent',
             'hasWebdriverTrue',
             'hasWebdriverInFrameTrue',
             'isPlaywright',
             'isPhantom',
-            'isSeleniumChromeDefault'
+            'isNightmare',
+            'isSeleniumChromeDefault',
+            'hasInconsistentChromeObject',
+            'isAutomatedWithCDP',
+            'isAutomatedWithCDPInWebWorker',
         ];
-
-        for (const test of criticalTests) {
-            if (results[test] === true) {
-                botIndicators++;
-            }
+        for (const test of booleanTests) {
+            if (results[test]) botIndicators++;
         }
 
-        // Check array/object results (tests that return objects when failed)
-        if (results.isHeadlessChrome && results.isHeadlessChrome.indicators) botIndicators++;
-        if (results.isWebGLInconsistent) botIndicators++;
-        if (results.isAutomatedWithCDP) botIndicators++;
-        if (results.hasInconsistentWorkerValues) botIndicators++;
-        if (results.hasInconsistentGPUFeatures) botIndicators++;
-        if (results.hasInconsistentClientHints) botIndicators++;
-        if (results.isIframeOverridden) botIndicators++;
-        if (results.hasHighHardwareConcurrency) botIndicators++;
-        if (results.hasHeadlessChromeDefaultScreenResolution) botIndicators++;
-        if (results.hasSuspiciousWeakSignals) botIndicators++;
-        // isAutomatedViaStackTrace: only count clear automation as bot indicator
-        if (results.isAutomatedViaStackTrace) {
-            const source = results.isAutomatedViaStackTrace.likelySource;
-            if (source === 'automation') {
-                botIndicators++;
-                console.log('[BotDetector] isAutomatedViaStackTrace: automation detected');
-            } else {
-                // unknown-script, browser-devtools - don't count as bot
-                console.log(`[BotDetector] isAutomatedViaStackTrace: ${source} (not counting as bot)`);
-            }
+        // Object/truthy tests
+        const objectTests = [
+            'isHeadlessChrome',
+            'isWebGLInconsistent',
+            'hasInconsistentWorkerValues',
+            'hasInconsistentGPUFeatures',
+            'hasInconsistentClientHints',
+            'isIframeOverridden',
+            'hasHeadlessChromeDefaultScreenResolution',
+            'hasSuspiciousWeakSignals',
+            'hasCanvasFingerprintIssue',
+            'hasAudioFingerprintIssue',
+            'hasMissingBrowserChrome',
+            'hasScreenAvailabilityAnomaly',
+            'hasTouchInconsistency',
+            'hasNavigatorIntegrityViolation',
+        ];
+        for (const test of objectTests) {
+            if (results[test]) botIndicators++;
         }
-        if (results.hasCanvasFingerprintIssue) botIndicators++;
-        if (results.hasAudioFingerprintIssue) botIndicators++;
+
+        // isAutomatedViaStackTrace: only count clear automation, not devtools
+        if (results.isAutomatedViaStackTrace && results.isAutomatedViaStackTrace.likelySource === 'automation') {
+            botIndicators++;
+        }
+
+        // hasHighHardwareConcurrency is a weak signal — count it only when other indicators exist
+        if (results.hasHighHardwareConcurrency && botIndicators > 0) {
+            botIndicators++;
+        }
 
         let statusClass, statusText;
         if (botIndicators >= 2) {
@@ -232,70 +217,48 @@
      * Initialize and run detection
      */
     async function init() {
-        console.log('[BotDetector] Initializing...');
         const resultsContainer = document.getElementById('static-results');
-        if (!resultsContainer) {
-            console.error('[BotDetector] No results container found!');
-            return;
-        }
+        if (!resultsContainer) return;
 
-        console.log('[BotDetector] Results container found, showing loading...');
         shared.showLoading(resultsContainer);
-
-        // Small delay to let page render
         await new Promise(r => setTimeout(r, 100));
 
-        console.log('[BotDetector] Running detection...');
         let results;
         try {
             results = await runStaticDetection();
-            console.log('[BotDetector] Detection complete, displaying results...');
         } catch (e) {
-            console.error('[BotDetector] Fatal error during detection:', e);
             results = { _fatalError: e.message };
         }
 
         try {
             displayResults(results, resultsContainer);
-            console.log('[BotDetector] Results displayed');
         } catch (e) {
-            console.error('[BotDetector] Error displaying results:', e);
             resultsContainer.innerHTML = `<div class="error">Error displaying results: ${e.message}</div>`;
         }
 
-        // Store results globally for test mode access
         window.lastStaticResults = results;
-        console.log('[BotDetector] Results stored in window.lastStaticResults');
     }
 
     /**
      * Simulate bot signatures for testing
      */
-    function simulateBotMode() {
-        // Override navigator properties to simulate bot
+    async function simulateBotMode() {
         const originalWebdriver = navigator.webdriver;
-        const originalUA = navigator.userAgent;
 
-        // Create temporary overrides
         Object.defineProperty(navigator, 'webdriver', {
             get: () => true,
             configurable: true
         });
-
-        // Add Selenium marker
         window.$cdc_asdjflasutopfhvcZLmcfl_ = {};
 
-        // Re-run detection
-        init();
+        // Wait for the full detection run before restoring state
+        await init();
 
-        // Cleanup after detection
-        setTimeout(() => {
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => originalWebdriver,
-                configurable: true
-            });
-            delete window.$cdc_asdjflasutopfhvcZLmcfl_;
-        }, 500);
+        Object.defineProperty(navigator, 'webdriver', {
+            get: () => originalWebdriver,
+            configurable: true
+        });
+        delete window.$cdc_asdjflasutopfhvcZLmcfl_;
     }
 
     // Initialize when DOM is ready

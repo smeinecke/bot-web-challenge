@@ -13,12 +13,10 @@
         /playwright/i, /webdriver/i, /nightmare/i, /slimer/i
     ];
 
-    // Headless default screen resolutions
+    // Headless default screen resolutions (only use resolutions that are headless-specific,
+    // not common consumer resolutions like 1280x720, 1280x800, 1920x1080)
     const HEADLESS_RESOLUTIONS = [
-        { width: 800, height: 600 },
-        { width: 1280, height: 720 },
-        { width: 1280, height: 800 },
-        { width: 1920, height: 1080 }
+        { width: 800, height: 600 }
     ];
 
     /**
@@ -40,25 +38,16 @@
      * Check for webdriver in iframe
      */
     function checkWebdriverInFrame() {
-        console.log('[BotDetector] checkWebdriverInFrame: starting test');
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        document.body.appendChild(iframe);
         try {
-            const iframe = document.createElement('iframe');
-            iframe.style.display = 'none';
-            document.body.appendChild(iframe);
-            console.log('[BotDetector] checkWebdriverInFrame: iframe added to body');
-
             const frameWindow = iframe.contentWindow;
-            console.log('[BotDetector] checkWebdriverInFrame: got contentWindow:', !!frameWindow);
-
-            const hasWebdriver = frameWindow && frameWindow.navigator && frameWindow.navigator.webdriver === true;
-            console.log('[BotDetector] checkWebdriverInFrame: navigator.webdriver in frame =', frameWindow?.navigator?.webdriver);
-
-            document.body.removeChild(iframe);
-            console.log('[BotDetector] checkWebdriverInFrame: result =', hasWebdriver);
-            return hasWebdriver;
+            return frameWindow && frameWindow.navigator && frameWindow.navigator.webdriver === true;
         } catch (e) {
-            console.error('[BotDetector] checkWebdriverInFrame: error:', e);
-            return { error: e.message, description: `Iframe webdriver check failed: ${e.message}` };
+            return false;
+        } finally {
+            document.body.removeChild(iframe);
         }
     }
 
@@ -72,20 +61,15 @@
     }
 
     /**
-     * Check for inconsistent chrome object
+     * Check for inconsistent chrome object.
+     * Real Chrome always exposes window.chrome; headless and many spoofed UAs leave it absent.
+     * Note: loadTimes/csi/app were removed in Chrome 97+ so we only check object existence.
      */
     function checkInconsistentChrome() {
         const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
         if (!isChrome) return false;
 
-        // Check if chrome object exists and has expected properties
-        if (typeof window.chrome === 'undefined') return true;
-
-        // Check for expected chrome properties
-        const expectedProps = ['loadTimes', 'csi', 'app'];
-        const hasExpected = expectedProps.some(prop => prop in window.chrome);
-
-        return !hasExpected;
+        return typeof window.chrome === 'undefined';
     }
 
     /**
@@ -120,19 +104,19 @@
      * Check for Selenium Chrome default marker
      */
     function checkSeleniumChromeDefault() {
-        for (let key in window) {
-            if (key.indexOf('cdc_') !== -1 || key.indexOf('$cdc_') !== -1) {
+        // Target specific known CDC key variants instead of iterating all window properties
+        const cdcKeys = [
+            'cdc_adoQpoasnfa76pfcZLmcfl_',
+            '$cdc_asdjflasutopfhvcZLmcfl_',
+            'cdc_asdjflasutopfhvcZLmcfl_Array',
+            'cdc_asdjflasutopfhvcZLmcfl_Promise',
+            'cdc_asdjflasutopfhvcZLmcfl_Symbol'
+        ];
+        for (const key of cdcKeys) {
+            if (typeof window[key] !== 'undefined' || typeof document[key] !== 'undefined') {
                 return true;
             }
         }
-
-        // Check in document as well
-        for (let key in document) {
-            if (key.indexOf('cdc_') !== -1 || key.indexOf('$cdc_') !== -1) {
-                return true;
-            }
-        }
-
         return false;
     }
 
@@ -142,28 +126,19 @@
     function checkHeadlessChrome() {
         const indicators = [];
 
-        // Check plugins - headless usually has 0 or 1
-        if (navigator.plugins && navigator.plugins.length <= 1) {
-            indicators.push(`lowPluginCount (${navigator.plugins.length} plugins)`);
-        }
-
         // Check languages
         if (!navigator.languages || navigator.languages.length === 0) {
             indicators.push('noLanguages');
         }
 
-        // Check permission query behavior
-        try {
-            if (typeof navigator.permissions === 'undefined') {
-                indicators.push('noPermissions');
-            }
-        } catch (e) {
-            indicators.push('permissionsError');
-        }
-
         // Check for Chrome specific headless features
         if (/HeadlessChrome/.test(navigator.userAgent)) {
             indicators.push('headlessInUA');
+        }
+
+        // outerWidth/outerHeight being 0 is a classic headless indicator
+        if (window.outerWidth === 0 || window.outerHeight === 0) {
+            indicators.push('zeroOuterDimensions');
         }
 
         if (indicators.length > 0) {
@@ -310,31 +285,20 @@
     }
 
     /**
-     * Check CDP via Error.prepareStackTrace
-     * Detects if prepareStackTrace is set to a non-native function (indicates automation/CDP)
+     * Check CDP via Error.prepareStackTrace (source inspection only).
+     * Note: the "wasAccessed" side-effect trap only works reliably in a Web Worker
+     * (where console.log doesn't read .stack under normal conditions, but CDP does).
+     * In the main thread, accessing .stack always triggers the handler, so we only
+     * inspect whether an existing non-native handler is automation-sourced.
      */
     function checkCDPViaStackTrace() {
-        console.log('[BotDetector] checkCDPViaStackTrace: starting test');
         try {
             const handler = Error.prepareStackTrace;
-
-            if (typeof handler === 'undefined') {
-                console.log('[BotDetector] checkCDPViaStackTrace: undefined (normal)');
-                return false; // Normal - no handler
-            }
+            if (typeof handler === 'undefined') return false;
 
             const handlerString = handler.toString();
-            console.log('[BotDetector] checkCDPViaStackTrace: handler found:', handlerString.slice(0, 100));
+            if (handlerString.includes('[native code]')) return false;
 
-            // Check if it's native code (browser built-in) - this is normal
-            const isNative = handlerString.includes('[native code]');
-
-            if (isNative) {
-                console.log('[BotDetector] checkCDPViaStackTrace: native handler (browser internal)');
-                return false; // Native handler is normal browser behavior
-            }
-
-            // Non-native handler detected - could be automation
             const handlerLower = handlerString.toLowerCase();
             let likelySource = 'unknown-script';
 
@@ -346,19 +310,14 @@
                 likelySource = 'automation';
             }
 
-            console.log('[BotDetector] checkCDPViaStackTrace: NON-NATIVE handler detected:', likelySource);
-
             return {
                 reason: 'nonNativePrepareStackTrace',
-                likelySource: likelySource,
-                isNative: false,
-                handlerLength: handlerString.length,
+                likelySource,
                 handlerPreview: handlerString.slice(0, 150),
                 description: `Non-native prepareStackTrace handler [${likelySource}]: ${handlerString.slice(0, 60)}...`
             };
         } catch (e) {
-            console.error('[BotDetector] checkCDPViaStackTrace: error:', e);
-            return { reason: 'exception', description: `Error in checkCDPViaStackTrace: ${e.message}` };
+            return false;
         }
     }
 
@@ -395,7 +354,15 @@
                 osc.start(0);
 
                 ctx.startRendering();
+                let settled = false;
+                const timer = setTimeout(() => {
+                    if (!settled) { settled = true; resolve({ reason: 'timeout', description: 'Audio fingerprint timed out' }); }
+                }, 2000);
+
                 ctx.oncomplete = function(e) {
+                    clearTimeout(timer);
+                    if (settled) return;
+                    settled = true;
                     try {
                         const buffer = e.renderedBuffer.getChannelData(0);
                         // Sum samples from 4500-5000 range
@@ -419,9 +386,6 @@
                         resolve({ reason: 'processingError', description: 'Error processing audio data' });
                     }
                 };
-
-                // Timeout fallback
-                setTimeout(() => resolve({ reason: 'timeout', description: 'Audio fingerprint timed out' }), 2000);
             } catch (e) {
                 resolve({ reason: 'exception', description: `Audio fingerprint error: ${e.message}` });
             }
@@ -506,25 +470,14 @@
      * Check for iframe behavior is overridden
      */
     function checkIframeOverridden() {
+        const iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        document.body.appendChild(iframe);
         try {
-            const iframe = document.createElement('iframe');
-            iframe.style.display = 'none';
-            document.body.appendChild(iframe);
-
             const contentWindow = iframe.contentWindow;
 
-            // Check if contentWindow has been tampered with
-            const originalToString = Object.prototype.toString.call(contentWindow);
-            const expectedToString = '[object Window]';
-
-            // Try to access a property that should exist
-            const hasNavigator = 'navigator' in contentWindow;
-            const navigatorProto = contentWindow.navigator && Object.getPrototypeOf(contentWindow.navigator);
-
-            document.body.removeChild(iframe);
-
             // If contentWindow has been overridden, these checks might fail
-            if (!hasNavigator) {
+            if (!('navigator' in contentWindow)) {
                 return { reason: 'noNavigator', description: 'Iframe navigator missing - anti-detection script likely active' };
             }
 
@@ -535,7 +488,9 @@
 
             return false;
         } catch (e) {
-            return { reason: 'exception', message: e.message, description: `Iframe check error: ${e.message}` };
+            return false;
+        } finally {
+            document.body.removeChild(iframe);
         }
     }
 
@@ -597,11 +552,17 @@
         return false;
     }
 
+    // Shared worker result promise — both checkInconsistentWorkerValues and
+    // checkAutomatedWithCDPInWorker share a single worker run per page load.
+    let _workerTestsPromise = null;
+
     /**
-     * Run Web Worker based tests
+     * Run Web Worker based tests (cached — runs at most once per page load)
      */
     function runWorkerTests() {
-        return new Promise((resolve) => {
+        if (_workerTestsPromise) return _workerTestsPromise;
+
+        _workerTestsPromise = new Promise((resolve) => {
             try {
                 const workerCode = `
                     self.onmessage = function(e) {
@@ -611,7 +572,9 @@
                             platform: navigator.platform,
                             hardwareConcurrency: navigator.hardwareConcurrency,
                             languages: navigator.languages,
-                            hasCDP: false
+                            hasCDP: false,
+                            webGLVendor: 'NA',
+                            webGLRenderer: 'NA'
                         };
 
                         // Check for CDP in worker
@@ -623,12 +586,43 @@
                             }
                         }
 
+                        // CDP detection via Error.prepareStackTrace side-effect trap.
+                        // In a worker, console.log(err) does NOT read .stack normally,
+                        // but CDP intercepts it and does — so wasAccessed == true means CDP is attached.
+                        try {
+                            let wasAccessed = false;
+                            const origPST = Error.prepareStackTrace;
+                            Error.prepareStackTrace = function() {
+                                wasAccessed = true;
+                                return typeof origPST === 'function' ? origPST.apply(this, arguments) : undefined;
+                            };
+                            const probe = new Error('');
+                            console.log(probe);
+                            Error.prepareStackTrace = origPST;
+                            results.hasCDPWorker = wasAccessed;
+                        } catch(_) {}
+
+                        // WebGL in worker via OffscreenCanvas
+                        try {
+                            const canvas = new OffscreenCanvas(1, 1);
+                            const gl = canvas.getContext('webgl');
+                            if (gl) {
+                                const ext = gl.getExtension('WEBGL_debug_renderer_info');
+                                if (ext) {
+                                    results.webGLVendor = gl.getParameter(ext.UNMASKED_VENDOR_WEBGL);
+                                    results.webGLRenderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+                                }
+                            }
+                        } catch (_) {}
+
                         self.postMessage(results);
                     };
                 `;
 
                 const blob = new Blob([workerCode], { type: 'application/javascript' });
-                const worker = new Worker(URL.createObjectURL(blob));
+                const blobUrl = URL.createObjectURL(blob);
+                const worker = new Worker(blobUrl);
+                URL.revokeObjectURL(blobUrl);
 
                 worker.onmessage = function(e) {
                     worker.terminate();
@@ -651,6 +645,8 @@
                 resolve({ error: e.message, notSupported: true });
             }
         });
+
+        return _workerTestsPromise;
     }
 
     /**
@@ -700,6 +696,23 @@
             details.hardwareConcurrency = { main: navigator.hardwareConcurrency, worker: workerData.hardwareConcurrency };
         }
 
+        // Compare WebGL renderer (if worker has it)
+        if (workerData.webGLVendor && workerData.webGLVendor !== 'NA') {
+            try {
+                const canvas = document.createElement('canvas');
+                const gl = canvas.getContext('webgl');
+                const ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+                if (ext) {
+                    const mainVendor = gl.getParameter(ext.UNMASKED_VENDOR_WEBGL);
+                    const mainRenderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+                    if (mainVendor !== workerData.webGLVendor || mainRenderer !== workerData.webGLRenderer) {
+                        inconsistencies.push('webGL');
+                        details.webGL = { main: `${mainVendor}/${mainRenderer}`, worker: `${workerData.webGLVendor}/${workerData.webGLRenderer}` };
+                    }
+                }
+            } catch (_) {}
+        }
+
         if (inconsistencies.length > 0) {
             return {
                 inconsistencies,
@@ -712,11 +725,11 @@
     }
 
     /**
-     * Check CDP in Web Worker
+     * Check CDP in Web Worker — combines marker check and prepareStackTrace trap
      */
     async function checkAutomatedWithCDPInWorker() {
         const workerData = await runWorkerTests();
-        return workerData.hasCDP === true;
+        return workerData.hasCDP === true || workerData.hasCDPWorker === true;
     }
 
     /**
@@ -731,7 +744,8 @@
         }
 
         // Check for suspicious navigator properties
-        if (navigator.vendor === '' || navigator.vendor === undefined) {
+        // navigator.vendor === '' is normal for Firefox, so only flag if Chrome UA is present
+        if (navigator.vendor === '' && /Chrome/.test(navigator.userAgent)) {
             signals.push('noVendor');
         }
 
@@ -771,7 +785,6 @@
      * Create a result item element
      */
     function createResultElement(label, value, isBoolean = true, details = null, showLikelySource = false) {
-        console.log(`[BotDetector] createResultElement: label=${label}, value=${JSON.stringify(value)}, isBoolean=${isBoolean}`);
         const div = document.createElement('div');
         div.className = 'result-item';
 
@@ -781,8 +794,8 @@
 
         const valueSpan = document.createElement('span');
         const isFailed = isBoolean ? value : (value !== false && value !== null && value !== undefined);
-        valueSpan.className = 'value ' + (isBoolean ? (value ? 'true' : 'false') : (isFailed ? 'true' : 'false'));
-        valueSpan.textContent = isBoolean ? (value ? 'YES' : 'NO') : 'YES';
+        valueSpan.className = 'value ' + (isFailed ? 'true' : 'false');
+        valueSpan.textContent = isFailed ? 'YES' : 'NO';
 
         div.appendChild(labelSpan);
         div.appendChild(valueSpan);
@@ -813,36 +826,135 @@
             }
 
             detailsSpan.textContent = detailsText;
-            detailsSpan.title = detailsText; // For hover
+            detailsSpan.title = detailsText;
             div.appendChild(detailsSpan);
             div.classList.add('has-details');
+        }
 
-            // Add a second line with stack sample if available
-            if (showLikelySource && details.stackSample) {
-                const stackSpan = document.createElement('span');
-                stackSpan.className = 'result-details stack-trace';
-                stackSpan.style.fontSize = '0.7rem';
-                stackSpan.style.opacity = '0.85';
-                stackSpan.textContent = details.stackSample;
-                stackSpan.title = details.fullStackPreview || JSON.stringify(details.callerInfo, null, 2);
-                div.appendChild(stackSpan);
+        return div;
+    }
+
+    /**
+     * Check if browser chrome UI is missing (outerWidth <= innerWidth when not in fullscreen)
+     * Real browsers always have some UI chrome adding height/width; headless browsers don't.
+     */
+    function checkMissingBrowserChrome() {
+        if (window.outerWidth === 0 || window.outerHeight === 0) {
+            return {
+                reason: 'zeroOuter',
+                outerWidth: window.outerWidth,
+                outerHeight: window.outerHeight,
+                description: `outerWidth/Height is 0 — classic headless browser indicator`
+            };
+        }
+
+        // In fullscreen mode outerWidth === innerWidth is expected, so skip the check
+        if (document.fullscreenElement) return false;
+
+        if (window.outerWidth <= window.innerWidth && window.outerHeight <= window.innerHeight) {
+            return {
+                reason: 'noUIChrome',
+                outerWidth: window.outerWidth,
+                outerHeight: window.outerHeight,
+                innerWidth: window.innerWidth,
+                innerHeight: window.innerHeight,
+                description: `No browser UI chrome (outer: ${window.outerWidth}x${window.outerHeight} ≤ inner: ${window.innerWidth}x${window.innerHeight})`
+            };
+        }
+
+        return false;
+    }
+
+    /**
+     * Check screen availability — real Windows desktops always reserve space for the taskbar.
+     * Linux/Wayland can legitimately report avail === screen even with a taskbar, so this
+     * check is Windows-only and treated as a weak corroborating signal.
+     */
+    function checkScreenAvailability() {
+        // Only meaningful on Windows — Linux (Wayland especially) and macOS can report
+        // avail === screen in fully-legitimate configurations
+        const isWindows = /Win/.test(navigator.platform) || /Windows/.test(navigator.userAgent);
+        if (!isWindows) return false;
+
+        const isMobile = /Mobile|Android|iPhone|iPad/.test(navigator.userAgent);
+        if (isMobile) return false;
+
+        if (window.screen.availHeight === window.screen.height &&
+            window.screen.availWidth === window.screen.width) {
+            return {
+                reason: 'noTaskbar',
+                screenWidth: window.screen.width,
+                screenHeight: window.screen.height,
+                description: `screen.avail === screen dimensions on Windows — no taskbar detected (${window.screen.width}x${window.screen.height})`
+            };
+        }
+
+        return false;
+    }
+
+    /**
+     * Check for touch support inconsistencies (e.g. mobile UA without touch events)
+     */
+    function checkTouchInconsistency() {
+        const maxTouchPoints = navigator.maxTouchPoints || 0;
+        const hasTouchEvent = 'ontouchstart' in window;
+        const isMobileUA = /Mobile|Android|iPhone|iPad/.test(navigator.userAgent);
+        const hasCoarsePointer = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+
+        if (isMobileUA && maxTouchPoints === 0 && !hasTouchEvent) {
+            return {
+                reason: 'mobileUANoTouch',
+                maxTouchPoints,
+                description: 'Mobile UA string but no touch support — UA spoofing likely'
+            };
+        }
+
+        // coarse pointer (touch screen) declared but navigator says no touch points
+        if (hasCoarsePointer && maxTouchPoints === 0) {
+            return {
+                reason: 'coarsePointerNoTouchPoints',
+                description: 'Media query reports coarse pointer but maxTouchPoints is 0 — inconsistent'
+            };
+        }
+
+        return false;
+    }
+
+    /**
+     * Check Navigator prototype chain integrity.
+     * Anti-detection scripts often patch navigator directly rather than its prototype,
+     * leaving detectable property descriptor signatures.
+     */
+    function checkNavigatorIntegrity() {
+        const suspicious = [];
+
+        // navigator.webdriver should be an accessor on the prototype, not an own value property
+        const wdDescriptor = Object.getOwnPropertyDescriptor(navigator, 'webdriver');
+        if (wdDescriptor) {
+            // If it's an own value property set to false, it was explicitly patched
+            if (!wdDescriptor.get && wdDescriptor.value === false) {
+                suspicious.push('webdriverForcedFalse');
             }
-
-            // Add third line with full stack preview if available
-            if (showLikelySource && details.fullStackPreview && details.fullStackPreview !== details.stackSample) {
-                const fullStackSpan = document.createElement('span');
-                fullStackSpan.className = 'result-details stack-trace';
-                fullStackSpan.style.fontSize = '0.65rem';
-                fullStackSpan.style.opacity = '0.7';
-                fullStackSpan.style.borderLeftColor = 'var(--text-secondary)';
-                fullStackSpan.textContent = `Raw: ${details.fullStackPreview}`;
-                fullStackSpan.title = 'Raw stack trace preview';
-                div.appendChild(fullStackSpan);
+            // If configurable is false but the value is overridden, that's a red flag
+            if (wdDescriptor.get && wdDescriptor.get.toString().indexOf('[native code]') === -1) {
+                suspicious.push('webdriverGetterPatched');
             }
         }
 
-        console.log(`[BotDetector] createResultElement: created element for ${label}`);
-        return div;
+        // Check if userAgent own property was set directly on navigator (evasion technique)
+        const uaDescriptor = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+        if (uaDescriptor && uaDescriptor.get && uaDescriptor.get.toString().indexOf('[native code]') === -1) {
+            suspicious.push('userAgentGetterPatched');
+        }
+
+        if (suspicious.length > 0) {
+            return {
+                suspicious,
+                description: `Navigator property tampering: ${suspicious.join(', ')}`
+            };
+        }
+
+        return false;
     }
 
     /**
@@ -877,6 +989,10 @@
         checkInconsistentWorkerValues,
         checkAutomatedWithCDPInWorker,
         analyzeWeakSignals,
+        checkMissingBrowserChrome,
+        checkScreenAvailability,
+        checkTouchInconsistency,
+        checkNavigatorIntegrity,
         createResultElement,
         showLoading,
         runWorkerTests

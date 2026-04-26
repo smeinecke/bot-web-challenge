@@ -51,8 +51,8 @@
             <h2>Analysis Results</h2>
             <div id="interaction-results"></div>
             <div style="margin-top: 1rem;">
-                <button onclick="showJSONOutput()" style="padding: 0.25rem 0.75rem; font-size: 0.75rem;">Show JSON Output</button>
-                <button onclick="copyJSON()" style="padding: 0.25rem 0.75rem; font-size: 0.75rem; margin-left: 0.5rem;">Copy JSON</button>
+                <button onclick="showJSONOutput()" class="btn-sm">Show JSON Output</button>
+                <button onclick="copyJSON()" class="btn-sm" style="margin-left: 0.5rem;">Copy JSON</button>
             </div>
         </div>
 
@@ -95,9 +95,14 @@
                     document.getElementById('results-card').scrollIntoView({ behavior: 'smooth' });
                 }, 200);
             } else {
-                // Reset and re-analyze
+                // Restore webdriver to its original value and hide results
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined,
+                    configurable: true
+                });
                 window.InteractionDetector.reset();
-                window.InteractionDetector.analyze();
+                document.getElementById('results-card').style.display = 'none';
+                window.lastInteractionResults = null;
             }
         }
 
@@ -158,7 +163,7 @@
             // Include both static and interaction tests
             const allTests = [
                 // Interaction tests
-                'suspiciousClientSideBehavior', 'superHumanSpeed', 'hasCDPMouseLeak',
+                'suspiciousClientSideBehavior', 'superHumanSpeed', 'hasCDPMouseLeak', 'hasAdvancedBotSignals',
                 // Static tests
                 'hasBotUserAgent', 'hasWebdriverTrue', 'hasWebdriverInFrameTrue',
                 'isPlaywright', 'isSeleniumChromeDefault',

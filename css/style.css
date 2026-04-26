@@ -76,6 +76,12 @@ header p {
     color: var(--text-secondary);
 }
 
+/* Small utility button */
+.btn-sm {
+    padding: 0.25rem 0.75rem;
+    font-size: 0.75rem;
+}
+
 /* Test Mode Toggle */
 .test-mode {
     background-color: var(--bg-tertiary);
@@ -133,10 +139,6 @@ header p {
     color: var(--accent-success);
 }
 
-.value.unknown {
-    background-color: rgba(210, 153, 34, 0.2);
-    color: var(--accent-warning);
-}
 
 .result-details {
     grid-column: 1 / -1;

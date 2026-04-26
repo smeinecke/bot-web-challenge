@@ -19,10 +19,19 @@
         totalKeystrokes: 0,
         mousePathLength: 0,
         lastMousePos: null,
-        cdpLeakChecks: []
+        cdpLeakChecks: [],
+        // Advanced interaction signals
+        hasUntrustedEvent: false,
+        clicksAtExactCenter: 0,
+        clicksAtZero: 0,
+        suspiciousKeyEvents: 0,
+        keystrokeTimes: []
     };
 
-    const MAX_EVENTS = 500; // Prevent memory issues
+    const MAX_EVENTS = 500;
+
+    // Keep references to registered listeners so they can be removed on reset
+    let _listenersAttached = false;
 
     /**
      * Start tracking interactions
@@ -30,40 +39,26 @@
     function startTracking() {
         resetTracking();
 
-        // Mouse tracking
+        if (_listenersAttached) return;
+        _listenersAttached = true;
+
         document.addEventListener('mousemove', onMouseMove, { passive: true });
         document.addEventListener('mousedown', onMouseDown, { passive: true });
         document.addEventListener('mouseup', onMouseUp, { passive: true });
-
-        // Keyboard tracking
         document.addEventListener('keydown', onKeyDown, { passive: true });
         document.addEventListener('keyup', onKeyUp, { passive: true });
-        document.addEventListener('keypress', onKeyPress, { passive: true });
 
-        // Focus tracking for form
         const form = document.getElementById('login-form');
         if (form) {
             form.addEventListener('focusin', onFormFocus, { passive: true });
             form.addEventListener('submit', onFormSubmit);
         }
 
-        // Track all inputs in the form
-        const inputs = document.querySelectorAll('#login-form input');
-        inputs.forEach(input => {
-            input.addEventListener('focus', () => {
-                if (!tracking.firstFocusTime) {
-                    tracking.firstFocusTime = Date.now();
-                }
-                tracking.lastActivityTime = Date.now();
-            });
-            input.addEventListener('input', onInput);
-        });
-
         tracking.formStartTime = Date.now();
     }
 
     /**
-     * Reset tracking state
+     * Reset tracking state (listeners remain attached — data is cleared)
      */
     function resetTracking() {
         tracking = {
@@ -76,7 +71,12 @@
             totalKeystrokes: 0,
             mousePathLength: 0,
             lastMousePos: null,
-            cdpLeakChecks: []
+            cdpLeakChecks: [],
+            hasUntrustedEvent: false,
+            clicksAtExactCenter: 0,
+            clicksAtZero: 0,
+            suspiciousKeyEvents: 0,
+            keystrokeTimes: []
         };
     }
 
@@ -126,59 +126,83 @@
     }
 
     function onMouseDown(e) {
+        if (!e.isTrusted) tracking.hasUntrustedEvent = true;
+
         if (tracking.mouseEvents.length < MAX_EVENTS) {
             tracking.mouseEvents.push({
                 type: 'down',
                 x: e.clientX,
                 y: e.clientY,
                 button: e.button,
-                time: Date.now()
+                time: Date.now(),
+                isTrusted: e.isTrusted
             });
+        }
+
+        // Zero-coordinate click is a known CDP/automation artifact
+        if (e.clientX === 0 && e.clientY === 0) {
+            tracking.clicksAtZero++;
+        }
+
+        // Check if click landed on the exact center of the target element
+        if (e.target && e.target.getBoundingClientRect) {
+            const rect = e.target.getBoundingClientRect();
+            const cx = Math.round(rect.left + rect.width / 2);
+            const cy = Math.round(rect.top + rect.height / 2);
+            if (Math.abs(e.clientX - cx) <= 1 && Math.abs(e.clientY - cy) <= 1) {
+                tracking.clicksAtExactCenter++;
+            }
         }
     }
 
     function onMouseUp(e) {
+        if (!e.isTrusted) tracking.hasUntrustedEvent = true;
         if (tracking.mouseEvents.length < MAX_EVENTS) {
             tracking.mouseEvents.push({
                 type: 'up',
                 x: e.clientX,
                 y: e.clientY,
                 button: e.button,
-                time: Date.now()
+                time: Date.now(),
+                isTrusted: e.isTrusted
             });
         }
     }
 
     function onKeyDown(e) {
+        if (!e.isTrusted) tracking.hasUntrustedEvent = true;
+
+        // Synthetic key events from some automation frameworks have empty code/key
+        // but a non-zero keyCode — this is not possible for real keyboard input
+        if (e.code === '' && e.key === '' && e.keyCode > 0) {
+            tracking.suspiciousKeyEvents++;
+        }
+
         if (tracking.keyEvents.length < MAX_EVENTS) {
             tracking.keyEvents.push({
                 type: 'down',
                 key: e.key,
                 code: e.code,
-                time: Date.now()
+                time: Date.now(),
+                isTrusted: e.isTrusted
             });
         }
+        tracking.keystrokeTimes.push(Date.now());
         tracking.totalKeystrokes++;
         tracking.lastActivityTime = Date.now();
     }
 
     function onKeyUp(e) {
+        if (!e.isTrusted) tracking.hasUntrustedEvent = true;
         if (tracking.keyEvents.length < MAX_EVENTS) {
             tracking.keyEvents.push({
                 type: 'up',
                 key: e.key,
                 code: e.code,
-                time: Date.now()
+                time: Date.now(),
+                isTrusted: e.isTrusted
             });
         }
-        tracking.lastActivityTime = Date.now();
-    }
-
-    function onKeyPress(e) {
-        tracking.lastActivityTime = Date.now();
-    }
-
-    function onInput(e) {
         tracking.lastActivityTime = Date.now();
     }
 
@@ -217,6 +241,7 @@
         results.suspiciousClientSideBehavior = analyzeSuspiciousBehavior();
         results.superHumanSpeed = analyzeSuperHumanSpeed();
         results.hasCDPMouseLeak = analyzeCDPMouseLeak();
+        results.hasAdvancedBotSignals = analyzeAdvancedInteractionSignals();
 
         return results;
     }
@@ -371,6 +396,73 @@
     }
 
     /**
+     * Analyze advanced interaction signals from info.js patterns:
+     * - isTrusted=false events (synthetic events)
+     * - exact center clicks (bots click mathematical centers)
+     * - zero coordinate clicks
+     * - suspicious key events (empty code/key with non-zero keyCode)
+     * - keystroke timing regularity
+     */
+    function analyzeAdvancedInteractionSignals() {
+        const signals = [];
+
+        if (tracking.hasUntrustedEvent) {
+            signals.push({
+                name: 'untrustedEvent',
+                description: 'Event with isTrusted=false detected — automation dispatches synthetic events'
+            });
+        }
+
+        if (tracking.clicksAtZero > 0) {
+            signals.push({
+                name: 'zeroCoordinateClick',
+                description: `${tracking.clicksAtZero} click(s) at coordinates (0,0) — CDP automation artifact`
+            });
+        }
+
+        const totalClicks = tracking.mouseEvents.filter(e => e.type === 'down').length;
+        if (totalClicks >= 2 && tracking.clicksAtExactCenter >= totalClicks * 0.8) {
+            signals.push({
+                name: 'exactCenterClicks',
+                description: `${tracking.clicksAtExactCenter}/${totalClicks} clicks at exact element center — automated clicking pattern`
+            });
+        }
+
+        if (tracking.suspiciousKeyEvents > 0) {
+            signals.push({
+                name: 'syntheticKeyEvents',
+                description: `${tracking.suspiciousKeyEvents} key event(s) with empty code/key — automation injection signature`
+            });
+        }
+
+        // Keystroke interval regularity (complement to the general uniform timing check)
+        if (tracking.keystrokeTimes.length >= 5) {
+            const intervals = [];
+            for (let i = 1; i < tracking.keystrokeTimes.length; i++) {
+                intervals.push(tracking.keystrokeTimes[i] - tracking.keystrokeTimes[i - 1]);
+            }
+            const avg = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+            const stdDev = Math.sqrt(intervals.reduce((acc, v) => acc + Math.pow(v - avg, 2), 0) / intervals.length);
+            const sorted = [...intervals].sort((a, b) => a - b);
+            const median = sorted[Math.floor(sorted.length / 2)];
+
+            if (stdDev < 10 && avg < 100) {
+                signals.push({
+                    name: 'uniformKeystrokeTiming',
+                    description: `Keystroke intervals too regular (avg ${avg.toFixed(0)}ms, σ=${stdDev.toFixed(1)}ms, median ${median}ms) — bot-like typing`
+                });
+            }
+        }
+
+        if (signals.length === 0) return false;
+
+        return {
+            signals: signals.map(s => s.name),
+            description: signals.map(s => s.description).join('; ')
+        };
+    }
+
+    /**
      * Analyze for CDP mouse leak
      */
     function analyzeCDPMouseLeak() {
@@ -448,6 +540,7 @@
             { label: 'suspiciousClientSideBehavior', value: results.suspiciousClientSideBehavior !== false, details: results.suspiciousClientSideBehavior },
             { label: 'superHumanSpeed', value: results.superHumanSpeed !== false, details: results.superHumanSpeed },
             { label: 'hasCDPMouseLeak', value: results.hasCDPMouseLeak !== false, details: results.hasCDPMouseLeak },
+            { label: 'hasAdvancedBotSignals', value: results.hasAdvancedBotSignals !== false, details: results.hasAdvancedBotSignals },
         ];
 
         for (const item of resultItems) {
@@ -531,6 +624,7 @@
         if (results.suspiciousClientSideBehavior) botIndicators++;
         if (results.superHumanSpeed) botIndicators++;
         if (results.hasCDPMouseLeak) botIndicators++;
+        if (results.hasAdvancedBotSignals) botIndicators++;
 
         let statusClass, statusText;
         if (botIndicators >= 2) {
@@ -594,19 +688,28 @@
         tracking.firstFocusTime = Date.now() - 200;
         tracking.submitTime = Date.now();
 
-        // Add some mouse events with CDP-like patterns
+        // Add some mouse events with CDP-like patterns (perfect straight line, uniform timing)
+        const now = Date.now();
         for (let i = 0; i < 50; i++) {
             tracking.mouseEvents.push({
                 type: 'move',
                 x: 100 + i * 5,
                 y: 200,
-                screenX: 100 + i * 5, // Same as client (no scroll offset)
+                screenX: 100 + i * 5,
                 screenY: 200,
-                time: Date.now() + i * 16,
-                screenMismatch: true
+                time: now - (50 - i) * 16,
+                screenMismatch: true,
+                isTrusted: false
             });
             tracking.cdpLeakChecks.push(true);
         }
+        // Simulate clicks at exact center and zero coordinates
+        tracking.hasUntrustedEvent = true;
+        tracking.clicksAtZero = 1;
+        tracking.clicksAtExactCenter = 3;
+        tracking.mouseEvents.push({ type: 'down', x: 0, y: 0, isTrusted: false, time: now });
+        tracking.mouseEvents.push({ type: 'down', x: 0, y: 0, isTrusted: false, time: now + 1 });
+        tracking.mouseEvents.push({ type: 'down', x: 0, y: 0, isTrusted: false, time: now + 2 });
 
         // Trigger analysis
         analyzeAndShowResults();
