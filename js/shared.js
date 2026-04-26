@@ -311,117 +311,51 @@
 
     /**
      * Check CDP via Error.prepareStackTrace
-     * Captures detailed caller information to identify what's accessing it
+     * Detects if prepareStackTrace is set to a non-native function (indicates automation/CDP)
      */
     function checkCDPViaStackTrace() {
         console.log('[BotDetector] checkCDPViaStackTrace: starting test');
         try {
-            let accessed = false;
-            let callerInfo = null;
-            let fullStackString = null;
-            let stackSample = null;
-            const originalPrepareStackTrace = Error.prepareStackTrace;
+            const handler = Error.prepareStackTrace;
 
-            Error.prepareStackTrace = function(e, trace) {
-                accessed = true;
-                // Capture the stack trace as structured data
-                if (trace && trace.length > 0) {
-                    try {
-                        // Get more frames for better analysis
-                        const frames = trace.slice(0, 10).map(t => {
-                            const frame = {
-                                typeName: t.getTypeName && t.getTypeName(),
-                                functionName: t.getFunctionName && t.getFunctionName(),
-                                methodName: t.getMethodName && t.getMethodName(),
-                                fileName: t.getFileName && t.getFileName(),
-                                lineNumber: t.getLineNumber && t.getLineNumber(),
-                                columnNumber: t.getColumnNumber && t.getColumnNumber(),
-                                isNative: t.isNative && t.isNative(),
-                                isConstructor: t.isConstructor && t.isConstructor(),
-                                isToplevel: t.isToplevel && t.isToplevel(),
-                                isEval: t.isEval && t.isEval(),
-                                scriptId: t.getScriptNameOrSourceURL && t.getScriptNameOrSourceURL(),
-                                toString: t.toString && t.toString()
-                            };
-                            return frame;
-                        });
-                        callerInfo = frames;
-
-                        // Build stack sample string
-                        stackSample = frames.slice(0, 5).map(f => {
-                            const loc = f.fileName || f.scriptId || (f.isNative ? 'native' : 'unknown');
-                            return `${f.functionName || '(anon)'} @ ${loc}:${f.lineNumber || '?'}`;
-                        }).join(' <- ');
-
-                        // Also capture the full .toString() of the trace for raw analysis
-                        fullStackString = trace.toString ? trace.toString() : JSON.stringify(frames);
-                    } catch (captureErr) {
-                        callerInfo = { error: captureErr.message };
-                    }
-                }
-                return originalPrepareStackTrace ? originalPrepareStackTrace(e, trace) : (fullStackString || trace.toString ? trace.toString() : 'stack');
-            };
-
-            const err = new Error('bot-detector-test');
-            void err.stack; // Trigger prepareStackTrace
-            Error.prepareStackTrace = originalPrepareStackTrace; // Restore
-
-            if (accessed) {
-                // Analyze the caller info
-                let likelySource = 'unknown';
-                const stackStr = JSON.stringify(callerInfo).toLowerCase();
-                const fullStack = (fullStackString || '').toLowerCase();
-
-                // Check for browser built-ins
-                if (stackStr.includes('devtools') || fullStack.includes('devtools') ||
-                    stackStr.includes('chrome-extension') || fullStack.includes('chrome-extension') ||
-                    stackStr.includes('inspector') || fullStack.includes('inspector') ||
-                    stackStr.includes('devtools-protocol')) {
-                    likelySource = 'browser-devtools';
-                }
-                // Check for automation tools
-                else if (stackStr.includes('selenium') || fullStack.includes('selenium') ||
-                         stackStr.includes('webdriver') || fullStack.includes('webdriver') ||
-                         stackStr.includes('puppeteer') || fullStack.includes('puppeteer') ||
-                         stackStr.includes('playwright') || fullStack.includes('playwright') ||
-                         stackStr.includes('cdp') || fullStack.includes('chromedevtoolsprotocol')) {
-                    likelySource = 'automation';
-                }
-                // Check for dynamic script execution
-                else if (stackStr.includes('eval') || fullStack.includes('eval') ||
-                         stackStr.includes('function') || fullStack.includes('function') ||
-                         stackStr.includes('new function')) {
-                    likelySource = 'dynamic-script';
-                }
-                // Edge/Chrome internal features
-                else if (fullStack.includes('microsoft') || fullStack.includes('edge') ||
-                         fullStack.includes('browser') || stackStr.includes('browser')) {
-                    likelySource = 'browser-internal';
-                }
-                // Extension
-                else if (fullStack.includes('extension') || stackStr.includes('extension') ||
-                         fullStack.includes('content-script') || stackStr.includes('content-script')) {
-                    likelySource = 'browser-extension';
-                }
-                // Native code - could be DevTools or browser internals
-                else if (callerInfo && callerInfo.length > 0 && callerInfo[0].isNative) {
-                    likelySource = 'native-code';
-                }
-
-                console.log('[BotDetector] checkCDPViaStackTrace: detected source:', likelySource);
-                console.log('[BotDetector] checkCDPViaStackTrace: callerInfo:', callerInfo);
-                console.log('[BotDetector] checkCDPViaStackTrace: fullStack:', fullStackString?.slice(0, 500));
-
-                return {
-                    reason: 'prepareStackTraceAccessed',
-                    likelySource: likelySource,
-                    callerInfo: callerInfo,
-                    stackSample: stackSample,
-                    fullStackPreview: fullStackString?.slice(0, 200),
-                    description: `prepareStackTrace accessed [${likelySource}]: ${stackSample || 'no details'}`
-                };
+            if (typeof handler === 'undefined') {
+                console.log('[BotDetector] checkCDPViaStackTrace: undefined (normal)');
+                return false; // Normal - no handler
             }
-            return false;
+
+            const handlerString = handler.toString();
+            console.log('[BotDetector] checkCDPViaStackTrace: handler found:', handlerString.slice(0, 100));
+
+            // Check if it's native code (browser built-in) - this is normal
+            const isNative = handlerString.includes('[native code]');
+
+            if (isNative) {
+                console.log('[BotDetector] checkCDPViaStackTrace: native handler (browser internal)');
+                return false; // Native handler is normal browser behavior
+            }
+
+            // Non-native handler detected - could be automation
+            const handlerLower = handlerString.toLowerCase();
+            let likelySource = 'unknown-script';
+
+            if (handlerLower.includes('devtools') || handlerLower.includes('chrome-extension') || handlerLower.includes('inspector')) {
+                likelySource = 'browser-devtools';
+            } else if (handlerLower.includes('selenium') || handlerLower.includes('webdriver') || handlerLower.includes('puppeteer') || handlerLower.includes('playwright')) {
+                likelySource = 'automation';
+            } else if (handlerLower.includes('cdp') || handlerLower.includes('chromedevtools')) {
+                likelySource = 'automation';
+            }
+
+            console.log('[BotDetector] checkCDPViaStackTrace: NON-NATIVE handler detected:', likelySource);
+
+            return {
+                reason: 'nonNativePrepareStackTrace',
+                likelySource: likelySource,
+                isNative: false,
+                handlerLength: handlerString.length,
+                handlerPreview: handlerString.slice(0, 150),
+                description: `Non-native prepareStackTrace handler [${likelySource}]: ${handlerString.slice(0, 60)}...`
+            };
         } catch (e) {
             console.error('[BotDetector] checkCDPViaStackTrace: error:', e);
             return { reason: 'exception', description: `Error in checkCDPViaStackTrace: ${e.message}` };

@@ -199,18 +199,15 @@
         if (results.hasHighHardwareConcurrency) botIndicators++;
         if (results.hasHeadlessChromeDefaultScreenResolution) botIndicators++;
         if (results.hasSuspiciousWeakSignals) botIndicators++;
-        // isAutomatedViaStackTrace: only count clear automation signals
+        // isAutomatedViaStackTrace: only count clear automation as bot indicator
         if (results.isAutomatedViaStackTrace) {
             const source = results.isAutomatedViaStackTrace.likelySource;
             if (source === 'automation') {
-                botIndicators++; // Clear automation signal
+                botIndicators++;
                 console.log('[BotDetector] isAutomatedViaStackTrace: automation detected');
-            } else if (source === 'browser-extension' || source === 'dynamic-script') {
-                // Suspicious but not definitive
-                console.log(`[BotDetector] isAutomatedViaStackTrace: ${source} detected (suspicious)`);
             } else {
-                // browser-internal, native-code, browser-devtools, unknown - don't count
-                console.log(`[BotDetector] isAutomatedViaStackTrace: ${source} detected (not counting as bot)`);
+                // unknown-script, browser-devtools - don't count as bot
+                console.log(`[BotDetector] isAutomatedViaStackTrace: ${source} (not counting as bot)`);
             }
         }
         if (results.hasCanvasFingerprintIssue) botIndicators++;
