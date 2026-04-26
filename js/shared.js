@@ -40,16 +40,25 @@
      * Check for webdriver in iframe
      */
     function checkWebdriverInFrame() {
+        console.log('[BotDetector] checkWebdriverInFrame: starting test');
         try {
             const iframe = document.createElement('iframe');
             iframe.style.display = 'none';
             document.body.appendChild(iframe);
+            console.log('[BotDetector] checkWebdriverInFrame: iframe added to body');
+
             const frameWindow = iframe.contentWindow;
+            console.log('[BotDetector] checkWebdriverInFrame: got contentWindow:', !!frameWindow);
+
             const hasWebdriver = frameWindow && frameWindow.navigator && frameWindow.navigator.webdriver === true;
+            console.log('[BotDetector] checkWebdriverInFrame: navigator.webdriver in frame =', frameWindow?.navigator?.webdriver);
+
             document.body.removeChild(iframe);
+            console.log('[BotDetector] checkWebdriverInFrame: result =', hasWebdriver);
             return hasWebdriver;
         } catch (e) {
-            return false;
+            console.error('[BotDetector] checkWebdriverInFrame: error:', e);
+            return { error: e.message, description: `Iframe webdriver check failed: ${e.message}` };
         }
     }
 
@@ -302,25 +311,120 @@
 
     /**
      * Check CDP via Error.prepareStackTrace
+     * Captures detailed caller information to identify what's accessing it
      */
     function checkCDPViaStackTrace() {
+        console.log('[BotDetector] checkCDPViaStackTrace: starting test');
         try {
             let accessed = false;
+            let callerInfo = null;
+            let fullStackString = null;
+            let stackSample = null;
             const originalPrepareStackTrace = Error.prepareStackTrace;
+
             Error.prepareStackTrace = function(e, trace) {
                 accessed = true;
-                return originalPrepareStackTrace ? originalPrepareStackTrace(e, trace) : trace.toString();
+                // Capture the stack trace as structured data
+                if (trace && trace.length > 0) {
+                    try {
+                        // Get more frames for better analysis
+                        const frames = trace.slice(0, 10).map(t => {
+                            const frame = {
+                                typeName: t.getTypeName && t.getTypeName(),
+                                functionName: t.getFunctionName && t.getFunctionName(),
+                                methodName: t.getMethodName && t.getMethodName(),
+                                fileName: t.getFileName && t.getFileName(),
+                                lineNumber: t.getLineNumber && t.getLineNumber(),
+                                columnNumber: t.getColumnNumber && t.getColumnNumber(),
+                                isNative: t.isNative && t.isNative(),
+                                isConstructor: t.isConstructor && t.isConstructor(),
+                                isToplevel: t.isToplevel && t.isToplevel(),
+                                isEval: t.isEval && t.isEval(),
+                                scriptId: t.getScriptNameOrSourceURL && t.getScriptNameOrSourceURL(),
+                                toString: t.toString && t.toString()
+                            };
+                            return frame;
+                        });
+                        callerInfo = frames;
+
+                        // Build stack sample string
+                        stackSample = frames.slice(0, 5).map(f => {
+                            const loc = f.fileName || f.scriptId || (f.isNative ? 'native' : 'unknown');
+                            return `${f.functionName || '(anon)'} @ ${loc}:${f.lineNumber || '?'}`;
+                        }).join(' <- ');
+
+                        // Also capture the full .toString() of the trace for raw analysis
+                        fullStackString = trace.toString ? trace.toString() : JSON.stringify(frames);
+                    } catch (captureErr) {
+                        callerInfo = { error: captureErr.message };
+                    }
+                }
+                return originalPrepareStackTrace ? originalPrepareStackTrace(e, trace) : (fullStackString || trace.toString ? trace.toString() : 'stack');
             };
-            const err = new Error('');
-            void err.stack; // Must access .stack to trigger prepareStackTrace
+
+            const err = new Error('bot-detector-test');
+            void err.stack; // Trigger prepareStackTrace
             Error.prepareStackTrace = originalPrepareStackTrace; // Restore
 
             if (accessed) {
-                return { reason: 'prepareStackTraceAccessed', description: 'Error.prepareStackTrace was accessed - CDP/devtools detected' };
+                // Analyze the caller info
+                let likelySource = 'unknown';
+                const stackStr = JSON.stringify(callerInfo).toLowerCase();
+                const fullStack = (fullStackString || '').toLowerCase();
+
+                // Check for browser built-ins
+                if (stackStr.includes('devtools') || fullStack.includes('devtools') ||
+                    stackStr.includes('chrome-extension') || fullStack.includes('chrome-extension') ||
+                    stackStr.includes('inspector') || fullStack.includes('inspector') ||
+                    stackStr.includes('devtools-protocol')) {
+                    likelySource = 'browser-devtools';
+                }
+                // Check for automation tools
+                else if (stackStr.includes('selenium') || fullStack.includes('selenium') ||
+                         stackStr.includes('webdriver') || fullStack.includes('webdriver') ||
+                         stackStr.includes('puppeteer') || fullStack.includes('puppeteer') ||
+                         stackStr.includes('playwright') || fullStack.includes('playwright') ||
+                         stackStr.includes('cdp') || fullStack.includes('chromedevtoolsprotocol')) {
+                    likelySource = 'automation';
+                }
+                // Check for dynamic script execution
+                else if (stackStr.includes('eval') || fullStack.includes('eval') ||
+                         stackStr.includes('function') || fullStack.includes('function') ||
+                         stackStr.includes('new function')) {
+                    likelySource = 'dynamic-script';
+                }
+                // Edge/Chrome internal features
+                else if (fullStack.includes('microsoft') || fullStack.includes('edge') ||
+                         fullStack.includes('browser') || stackStr.includes('browser')) {
+                    likelySource = 'browser-internal';
+                }
+                // Extension
+                else if (fullStack.includes('extension') || stackStr.includes('extension') ||
+                         fullStack.includes('content-script') || stackStr.includes('content-script')) {
+                    likelySource = 'browser-extension';
+                }
+                // Native code - could be DevTools or browser internals
+                else if (callerInfo && callerInfo.length > 0 && callerInfo[0].isNative) {
+                    likelySource = 'native-code';
+                }
+
+                console.log('[BotDetector] checkCDPViaStackTrace: detected source:', likelySource);
+                console.log('[BotDetector] checkCDPViaStackTrace: callerInfo:', callerInfo);
+                console.log('[BotDetector] checkCDPViaStackTrace: fullStack:', fullStackString?.slice(0, 500));
+
+                return {
+                    reason: 'prepareStackTraceAccessed',
+                    likelySource: likelySource,
+                    callerInfo: callerInfo,
+                    stackSample: stackSample,
+                    fullStackPreview: fullStackString?.slice(0, 200),
+                    description: `prepareStackTrace accessed [${likelySource}]: ${stackSample || 'no details'}`
+                };
             }
             return false;
         } catch (e) {
-            return false;
+            console.error('[BotDetector] checkCDPViaStackTrace: error:', e);
+            return { reason: 'exception', description: `Error in checkCDPViaStackTrace: ${e.message}` };
         }
     }
 
@@ -732,7 +836,8 @@
     /**
      * Create a result item element
      */
-    function createResultElement(label, value, isBoolean = true, details = null) {
+    function createResultElement(label, value, isBoolean = true, details = null, showLikelySource = false) {
+        console.log(`[BotDetector] createResultElement: label=${label}, value=${JSON.stringify(value)}, isBoolean=${isBoolean}`);
         const div = document.createElement('div');
         div.className = 'result-item';
 
@@ -754,25 +859,55 @@
             detailsSpan.className = 'result-details';
 
             let detailsText = '';
+
+            // Special handling for isAutomatedViaStackTrace - show likelySource prominently
+            if (showLikelySource && details.likelySource) {
+                detailsText = `[${details.likelySource.toUpperCase()}] `;
+            }
+
             if (typeof details === 'object') {
                 if (details.description) {
-                    detailsText = details.description;
+                    detailsText += details.description;
                 } else if (details.reason) {
-                    detailsText = `Reason: ${details.reason}`;
+                    detailsText += `Reason: ${details.reason}`;
                     if (details.message) detailsText += ` (${details.message})`;
                 } else {
-                    detailsText = JSON.stringify(details).slice(0, 100);
+                    detailsText += JSON.stringify(details).slice(0, 100);
                 }
             } else {
-                detailsText = String(details);
+                detailsText += String(details);
             }
 
             detailsSpan.textContent = detailsText;
             detailsSpan.title = detailsText; // For hover
             div.appendChild(detailsSpan);
             div.classList.add('has-details');
+
+            // Add a second line with stack sample if available
+            if (showLikelySource && details.stackSample) {
+                const stackSpan = document.createElement('span');
+                stackSpan.className = 'result-details stack-trace';
+                stackSpan.style.fontSize = '0.7rem';
+                stackSpan.style.opacity = '0.85';
+                stackSpan.textContent = details.stackSample;
+                stackSpan.title = details.fullStackPreview || JSON.stringify(details.callerInfo, null, 2);
+                div.appendChild(stackSpan);
+            }
+
+            // Add third line with full stack preview if available
+            if (showLikelySource && details.fullStackPreview && details.fullStackPreview !== details.stackSample) {
+                const fullStackSpan = document.createElement('span');
+                fullStackSpan.className = 'result-details stack-trace';
+                fullStackSpan.style.fontSize = '0.65rem';
+                fullStackSpan.style.opacity = '0.7';
+                fullStackSpan.style.borderLeftColor = 'var(--text-secondary)';
+                fullStackSpan.textContent = `Raw: ${details.fullStackPreview}`;
+                fullStackSpan.title = 'Raw stack trace preview';
+                div.appendChild(fullStackSpan);
+            }
         }
 
+        console.log(`[BotDetector] createResultElement: created element for ${label}`);
         return div;
     }
 
