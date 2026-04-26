@@ -30,6 +30,14 @@
             <div class="test-mode">
                 <button onclick="showJSONOutput()" style="padding: 0.25rem 0.75rem; font-size: 0.75rem;">Show JSON Output</button>
                 <button onclick="copyJSON()" style="padding: 0.25rem 0.75rem; font-size: 0.75rem; margin-left: 0.5rem;">Copy JSON</button>
+                <button onclick="toggleDebugLog()" style="padding: 0.25rem 0.75rem; font-size: 0.75rem; margin-left: 0.5rem;">Show Debug Log</button>
+            </div>
+
+            <div id="debug-log-container" style="display: none; margin-top: 1rem;">
+                <h3>Debug Log</h3>
+                <textarea id="debug-log-textarea" readonly style="width: 100%; height: 300px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 6px; padding: 0.75rem; font-family: var(--font-mono); font-size: 0.75rem; resize: vertical;"></textarea>
+                <button onclick="copyDebugLog()" style="padding: 0.25rem 0.75rem; font-size: 0.75rem; margin-top: 0.5rem;">Copy Log</button>
+                <button onclick="clearDebugLog()" style="padding: 0.25rem 0.75rem; font-size: 0.75rem; margin-top: 0.5rem; margin-left: 0.5rem;">Clear</button>
             </div>
 
             <h2>Detection Results</h2>
@@ -108,6 +116,79 @@
             }).catch(err => {
                 console.error('Failed to copy:', err);
             });
+        }
+
+        // Debug log capture
+        let debugLogBuffer = [];
+        const originalConsoleLog = console.log;
+        const originalConsoleError = console.error;
+
+        function captureLog(type, args) {
+            const timestamp = new Date().toLocaleTimeString();
+            const prefix = type === 'error' ? '[ERROR]' : '[LOG]';
+            const message = args.map(arg => {
+                if (typeof arg === 'object') {
+                    try {
+                        return JSON.stringify(arg, null, 2);
+                    } catch (e) {
+                        return String(arg);
+                    }
+                }
+                return String(arg);
+            }).join(' ');
+            const line = `[${timestamp}] ${prefix} ${message}`;
+            debugLogBuffer.push(line);
+            updateDebugLogTextarea();
+            return line;
+        }
+
+        // Override console methods
+        console.log = function(...args) {
+            const line = captureLog('log', args);
+            // Also send to original console
+            originalConsoleLog.apply(console, args);
+        };
+
+        console.error = function(...args) {
+            const line = captureLog('error', args);
+            originalConsoleError.apply(console, args);
+        };
+
+        function updateDebugLogTextarea() {
+            const textarea = document.getElementById('debug-log-textarea');
+            if (textarea) {
+                textarea.value = debugLogBuffer.join('\n');
+                textarea.scrollTop = textarea.scrollHeight;
+            }
+        }
+
+        function toggleDebugLog() {
+            const container = document.getElementById('debug-log-container');
+            const button = event.target;
+            if (container.style.display === 'none') {
+                container.style.display = 'block';
+                button.textContent = 'Hide Debug Log';
+                updateDebugLogTextarea();
+            } else {
+                container.style.display = 'none';
+                button.textContent = 'Show Debug Log';
+            }
+        }
+
+        function copyDebugLog() {
+            const textarea = document.getElementById('debug-log-textarea');
+            if (textarea && textarea.value) {
+                navigator.clipboard.writeText(textarea.value).then(() => {
+                    alert('Debug log copied to clipboard!');
+                }).catch(err => {
+                    console.error('Failed to copy:', err);
+                });
+            }
+        }
+
+        function clearDebugLog() {
+            debugLogBuffer = [];
+            updateDebugLogTextarea();
         }
 
         function prepareJSONOutput(results) {
