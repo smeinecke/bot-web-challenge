@@ -1,6 +1,8 @@
 # Bot Detection Challenge
 
-This directory contains a local bot detection challenge for testing FlareSolverr's stealth capabilities.
+A standalone bot detection challenge for testing browser automation stealth capabilities.
+
+**[Live Demo](https://smeinecke.github.io/bot-web-challenge/)**
 
 ## Overview
 
@@ -76,82 +78,6 @@ Click "Show JSON Output" or "Copy JSON" to get machine-readable results:
     "indicatorCount": 2
   }
 }
-```
-
-### Integration with FlareSolverr
-
-Execute JavaScript to retrieve results:
-
-```python
-# For static tests
-results = driver.execute_script("return JSON.stringify(window.lastStaticResults)")
-
-# For interaction tests
-results = driver.execute_script("return JSON.stringify(window.lastInteractionResults)")
-```
-
-## Running Tests
-
-### Unit Tests (verify page structure)
-
-```bash
-cd /home/stefan/github/FlareSolverr
-python -m pytest tests/unit/test_challenge_pages.py -v
-```
-
-### Integration Tests (verify FlareSolverr passes)
-
-1. Start FlareSolverr:
-   ```bash
-   python -m flaresolverr
-   ```
-
-2. Run tests:
-   ```bash
-   cd /home/stefan/github/FlareSolverr
-   python -m pytest tests/integration/test_bot_challenge_local.py -v
-   ```
-
-### All Integration Tests
-
-```bash
-cd /home/stefan/github/FlareSolverr
-python -m pytest tests/integration/ -v
-```
-
-## GitHub Pages Deployment
-
-To host these pages on GitHub Pages:
-
-1. Go to repository Settings → Pages
-2. Set "Source" to "Deploy from a branch"
-3. Select branch and set folder to `/challenge`
-4. Save and wait for deployment
-5. Access at `https://yourusername.github.io/FlareSolverr/`
-
-## False Positive Fixes
-
-Recent fixes for false positives on valid browsers:
-
-- **GPU Features**: Raised threshold from 4096 → 1024 (2048 is normal for integrated GPUs)
-- **Worker Webdriver**: Treat `undefined`/`false`/`null` as equivalent "not detected"
-- **Straight Lines**: Changed from fixed area threshold to dynamic cross-product with 95% threshold
-- **CDP Mouse Leak**: Skip check when window is at (0,0) where screenX === clientX is normal
-
-## File Structure
-
-```
-challenge/
-├── index.html                 # Landing page
-├── static.html               # Static detection page
-├── interactions.html         # Interaction detection page
-├── css/
-│   └── style.css            # Shared styles
-├── js/
-│   ├── shared.js            # Common detection utilities
-│   ├── static-detector.js   # Static test runner
-│   └── interactions-detector.js  # Interaction test runner
-└── README.md               # This file
 ```
 
 ## References
