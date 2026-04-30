@@ -1246,6 +1246,16 @@
         return value === 'default' ? 'prompt' : value;
     }
 
+    function isChromiumLike() {
+        return /Chrome|Chromium|Edg\//.test(navigator.userAgent);
+    }
+
+    function isReliablePermissionOrigin() {
+        return window.location.protocol === 'https:' ||
+               window.location.hostname === 'localhost' ||
+               window.location.hostname === '127.0.0.1';
+    }
+
     async function checkPermissionsConsistency() {
         if (!navigator.permissions || typeof navigator.permissions.query !== 'function') {
             // Permissions API missing — weak signal, some privacy browsers disable it
@@ -1253,8 +1263,9 @@
         }
 
         const issues = [];
+        const canCompareNotificationPermission = isChromiumLike() && isReliablePermissionOrigin();
 
-        if (typeof Notification !== 'undefined') {
+        if (typeof Notification !== 'undefined' && canCompareNotificationPermission) {
             try {
                 const permissionStatus = await navigator.permissions.query({ name: 'notifications' });
                 const notificationPermission = normalizeNotificationPermission(Notification.permission);
@@ -1624,17 +1635,18 @@
             // Determine severity from result object or fallback to list-based
             let severity = 'medium';
             let weight = 1;
+            let hasExplicitSeverity = false;
 
             // Result object can override severity
             if (value && typeof value === 'object') {
-                if (value.severity === 'strong') { severity = 'strong'; weight = 2; }
-                else if (value.severity === 'medium') { severity = 'medium'; weight = 1; }
-                else if (value.severity === 'weak') { severity = 'weak'; weight = 0.5; }
-                else if (value.weak === true) { severity = 'weak'; weight = 0.5; }
+                if (value.severity === 'strong') { severity = 'strong'; weight = 2; hasExplicitSeverity = true; }
+                else if (value.severity === 'medium') { severity = 'medium'; weight = 1; hasExplicitSeverity = true; }
+                else if (value.severity === 'weak') { severity = 'weak'; weight = 0.5; hasExplicitSeverity = true; }
+                else if (value.weak === true) { severity = 'weak'; weight = 0.5; hasExplicitSeverity = true; }
             }
 
             // Fallback to list-based if not specified in result
-            if (severity === 'medium') {
+            if (!hasExplicitSeverity) {
                 if (objectTestsStrong.includes(name)) { severity = 'strong'; weight = 2; }
                 else if (objectTestsWeak.includes(name)) { severity = 'weak'; weight = 0.5; }
             }
