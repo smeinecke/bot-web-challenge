@@ -15,17 +15,17 @@
         },
         {
             name: 'search-social-crawler',
-            pattern: /\b(?:googlebot|bingbot|duckduckbot|baiduspider|yandexbot|applebot|facebookexternalhit|facebot|twitterbot|linkedinbot|slurp|semrushbot|ahrefsbot|mj12bot|dotbot|petalbot|bytespider)\b/i,
+            pattern: /\b(?:googlebot|bingbot|duckduckbot|baiduspider|yandexbot|applebot|facebookexternalhit|facebot|twitterbot|linkedinbot|slurp|semrushbot|ahrefsbot|mj12bot|dotbot|petalbot|bytespider|adsbot-google|mediapartners-google|google-inspectiontool|googleother|pinterestbot|discordbot|slackbot|telegrambot|redditbot|whatsapp|skypeuripreview)\b/i,
             confidence: 'high'
         },
         {
             name: 'ai-crawler',
-            pattern: /\b(?:gptbot|chatgpt-user|oai-searchbot|ccbot|claudebot|anthropic-ai|perplexitybot|amazonbot|turnitin|screaming frog|siteauditbot)\b/i,
+            pattern: /\b(?:gptbot|chatgpt-user|oai-searchbot|ccbot|claudebot|claude-user|claude-searchbot|anthropic-ai|perplexitybot|perplexity-user|amazonbot|turnitin|screaming frog|siteauditbot)\b/i,
             confidence: 'high'
         },
         {
             name: 'http-client',
-            pattern: /\b(?:curl|wget|python-requests|python-urllib|httpx|aiohttp|go-http-client|okhttp|java\/)\b/i,
+            pattern: /\b(?:curl|wget|python-requests|python-urllib|httpx|aiohttp|go-http-client|okhttp|java\/|node-fetch|undici|axios|got|php-curl|ruby|restsharp|powershell|winhttp|libcurl)\b/i,
             confidence: 'high'
         },
         {
@@ -448,9 +448,10 @@
     }
 
     /**
-     * Check canvas fingerprint consistency
+     * Check canvas API availability (not a fingerprint consistency test)
+     * Returns false if canvas API is unavailable or malformed
      */
-    function checkCanvasFingerprint() {
+    function checkCanvasAvailability() {
         try {
             const canvas = document.createElement('canvas');
             canvas.width = 400;
@@ -681,21 +682,23 @@
                 const worker = new Worker(blobUrl);
                 URL.revokeObjectURL(blobUrl);
 
+                // Timeout fallback
+                let timeoutId = setTimeout(() => {
+                    worker.terminate();
+                    resolve({ timeout: true });
+                }, 2000);
+
                 worker.onmessage = function(e) {
+                    clearTimeout(timeoutId);
                     worker.terminate();
                     resolve(e.data);
                 };
 
                 worker.onerror = function(e) {
+                    clearTimeout(timeoutId);
                     worker.terminate();
                     resolve({ error: e.message });
                 };
-
-                // Timeout fallback
-                setTimeout(() => {
-                    worker.terminate();
-                    resolve({ timeout: true });
-                }, 2000);
 
                 worker.postMessage('start');
             } catch (e) {
@@ -1040,7 +1043,7 @@
         checkAutomatedWithCDP,
         checkCDPViaStackTrace,
         checkAudioFingerprint,
-        checkCanvasFingerprint,
+        checkCanvasAvailability,
         checkInconsistentClientHints,
         checkInconsistentGPUFeatures,
         checkIframeOverridden,

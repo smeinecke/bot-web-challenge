@@ -73,7 +73,7 @@
 
         results.hasSuspiciousWeakSignals = runTest('hasSuspiciousWeakSignals', () => shared.analyzeWeakSignals());
         results.isAutomatedViaStackTrace = runTest('isAutomatedViaStackTrace', () => shared.checkCDPViaStackTrace());
-        results.hasCanvasFingerprintIssue = runTest('hasCanvasFingerprintIssue', () => shared.checkCanvasFingerprint());
+        results.hasCanvasFingerprintIssue = runTest('hasCanvasFingerprintIssue', () => shared.checkCanvasAvailability());
         results.hasAudioFingerprintIssue = await runAsyncTest('hasAudioFingerprintIssue', () => shared.checkAudioFingerprint());
 
         results._debug = {
@@ -120,7 +120,7 @@
             { label: 'hasTouchInconsistency', value: results.hasTouchInconsistency !== false, details: results.hasTouchInconsistency },
             { label: 'hasNavigatorIntegrityViolation', value: results.hasNavigatorIntegrityViolation !== false, details: results.hasNavigatorIntegrityViolation },
             { label: 'hasSuspiciousWeakSignals', value: results.hasSuspiciousWeakSignals !== false, details: results.hasSuspiciousWeakSignals },
-            { label: 'isAutomatedViaStackTrace', value: results.isAutomatedViaStackTrace !== false, details: results.isAutomatedViaStackTrace, showLikelySource: true },
+            { label: 'isAutomatedViaStackTrace', value: results.isAutomatedViaStackTrace && results.isAutomatedViaStackTrace.likelySource === 'automation', details: results.isAutomatedViaStackTrace, showLikelySource: true },
             { label: 'hasCanvasFingerprintIssue', value: results.hasCanvasFingerprintIssue !== false, details: results.hasCanvasFingerprintIssue },
             { label: 'hasAudioFingerprintIssue', value: results.hasAudioFingerprintIssue !== false, details: results.hasAudioFingerprintIssue },
         ];

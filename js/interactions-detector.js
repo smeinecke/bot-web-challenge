@@ -254,7 +254,7 @@
             hasTouchInconsistency: shared.checkTouchInconsistency(),
             hasSuspiciousWeakSignals: shared.analyzeWeakSignals(),
             isAutomatedViaStackTrace: shared.checkCDPViaStackTrace(),
-            hasCanvasFingerprintIssue: shared.checkCanvasFingerprint(),
+            hasCanvasFingerprintIssue: shared.checkCanvasAvailability(),
 
             // Include static tests (async)
             hasInconsistentClientHints: shared.checkInconsistentClientHints(),
@@ -594,7 +594,7 @@
             { label: 'hasTouchInconsistency', value: results.hasTouchInconsistency !== false, details: results.hasTouchInconsistency },
             { label: 'hasNavigatorIntegrityViolation', value: results.hasNavigatorIntegrityViolation !== false, details: results.hasNavigatorIntegrityViolation },
             { label: 'hasSuspiciousWeakSignals', value: results.hasSuspiciousWeakSignals !== false, details: results.hasSuspiciousWeakSignals },
-            { label: 'isAutomatedViaStackTrace', value: results.isAutomatedViaStackTrace !== false, details: results.isAutomatedViaStackTrace, showLikelySource: true },
+            { label: 'isAutomatedViaStackTrace', value: results.isAutomatedViaStackTrace && results.isAutomatedViaStackTrace.likelySource === 'automation', details: results.isAutomatedViaStackTrace, showLikelySource: true },
             { label: 'hasCanvasFingerprintIssue', value: results.hasCanvasFingerprintIssue !== false, details: results.hasCanvasFingerprintIssue },
             { label: 'hasAudioFingerprintIssue', value: results.hasAudioFingerprintIssue !== false, details: results.hasAudioFingerprintIssue },
         ];
@@ -651,19 +651,20 @@
 
         let botIndicators = 0;
 
-        // Boolean tests - truthy value means detected
+        // Boolean tests - value is exactly true when detected
         const booleanTests = [
-            'hasBotUserAgent', 'hasWebdriverTrue', 'hasWebdriverInFrameTrue',
+            'hasWebdriverTrue', 'hasWebdriverInFrameTrue',
             'isPlaywright', 'hasInconsistentChromeObject', 'isPhantom',
             'isNightmare', 'isSequentum', 'isSeleniumChromeDefault',
-            'isAutomatedWithCDP', 'isAutomatedWithCDPInWebWorker'
+            'isAutomatedWithCDPInWebWorker'
         ];
         for (const test of booleanTests) {
             if (results[test] === true) botIndicators++;
         }
 
-        // Object/truthy tests
+        // Object/truthy tests - truthy non-null value means detected (includes objects)
         const objectTests = [
+            'hasBotUserAgent', 'isAutomatedWithCDP',
             'isHeadlessChrome', 'isWebGLInconsistent', 'hasInconsistentWorkerValues',
             'hasInconsistentGPUFeatures', 'hasInconsistentClientHints',
             'isIframeOverridden', 'hasHeadlessChromeDefaultScreenResolution',

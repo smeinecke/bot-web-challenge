@@ -207,16 +207,17 @@
                 }
             };
 
-            // Boolean tests - truthy value means detected
+            // Boolean tests - value is exactly true when detected
             const booleanTests = [
-                'hasBotUserAgent', 'hasWebdriverTrue', 'hasWebdriverInFrameTrue',
+                'hasWebdriverTrue', 'hasWebdriverInFrameTrue',
                 'isPlaywright', 'hasInconsistentChromeObject', 'isPhantom',
                 'isNightmare', 'isSequentum', 'isSeleniumChromeDefault',
-                'isAutomatedWithCDP', 'isAutomatedWithCDPInWebWorker'
+                'isAutomatedWithCDPInWebWorker'
             ];
 
-            // Object/truthy tests - object value means detected
+            // Object/truthy tests - truthy non-null value means detected (includes objects)
             const objectTests = [
+                'hasBotUserAgent', 'isAutomatedWithCDP',
                 'isHeadlessChrome', 'isWebGLInconsistent', 'hasInconsistentWorkerValues',
                 'hasInconsistentGPUFeatures', 'hasInconsistentClientHints',
                 'isIframeOverridden', 'hasHeadlessChromeDefaultScreenResolution',
@@ -241,7 +242,7 @@
                 indicatorDetails.push({ test: name, description });
             };
 
-            // Process boolean tests
+            // Process boolean tests (exactly true)
             for (const name of booleanTests) {
                 const value = results[name];
                 const isFailed = value === true;
@@ -261,7 +262,7 @@
                 }
             }
 
-            // Process object tests
+            // Process object/truthy tests (any truthy value counts as detected)
             for (const name of objectTests) {
                 const value = results[name];
                 const isFailed = value !== false && value !== null && value !== undefined;
@@ -281,7 +282,7 @@
                 }
             }
 
-            // isAutomatedViaStackTrace: only count clear automation, not devtools
+            // isAutomatedViaStackTrace: only count clear automation, not devtools or unknown
             const stackTraceResult = results.isAutomatedViaStackTrace;
             const isStackTraceAutomation = stackTraceResult && stackTraceResult.likelySource === 'automation';
             output.tests['isAutomatedViaStackTrace'] = {
