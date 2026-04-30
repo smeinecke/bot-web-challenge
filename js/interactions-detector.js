@@ -125,15 +125,16 @@
 
         // Collect CDP leak checks with structured results
         if (tracking.cdpLeakChecks.length < 100) {
-            const isFirefox = /firefox/i.test(navigator.userAgent);
+            const ua = navigator.userAgent;
+            const isFirefoxLinux = /firefox/i.test(ua) && /linux|x11/i.test(ua);
 
             if (!looksLikeCDP) {
                 tracking.cdpLeakChecks.push({ suspicious: false });
-            } else if (isFirefox) {
+            } else if (isFirefoxLinux) {
                 // Firefox/Linux can report screen coordinates equal to client coordinates in normal browsing
                 tracking.cdpLeakChecks.push({
                     suspicious: false,
-                    reason: 'screen_equals_client_in_firefox',
+                    reason: 'screen_equals_client_in_firefox_linux',
                     confidence: 'none',
                     description: 'Firefox/Linux may report screen coordinates equal to client coordinates in normal browsing.'
                 });
@@ -787,7 +788,12 @@
                 screenMismatch: true,
                 isTrusted: false
             });
-            tracking.cdpLeakChecks.push(true);
+            tracking.cdpLeakChecks.push({
+                suspicious: true,
+                reason: 'simulated_cdp_mouse_leak',
+                confidence: 'medium',
+                description: 'Simulated CDP screen coordinate leak'
+            });
         }
         // Simulate clicks at exact center and zero coordinates
         tracking.hasUntrustedEvent = true;
