@@ -458,9 +458,10 @@
             canvas.height = 200;
             const ctx = canvas.getContext('2d');
 
-            // If 2D context is unavailable, return false (not bot proof - just unsupported/restricted)
+            // If 2D context is unavailable, return a weak signal (privacy browsers, remote desktops,
+            // enterprise environments may disable canvas). Not standalone bot proof.
             if (!ctx) {
-                return false;
+                return { reason: 'no2DContext', weak: true, description: 'Canvas 2D context unavailable' };
             }
 
             // Draw standard fingerprint content
@@ -555,6 +556,120 @@
         } finally {
             document.body.removeChild(iframe);
         }
+    }
+
+    /**
+     * Check for CDP/automation leaks via blob URL iframe.
+     * CDP automation often configures the main frame but leaves inconsistent
+     * state inside blob URL iframes (webdriver, userAgent, languages, chrome object).
+     */
+    function checkBlobIframeCDP() {
+        return new Promise((resolve) => {
+            try {
+                const html = '<!DOCTYPE html><html><head></head><body></body></html>';
+                const blob = new Blob([html], { type: 'text/html' });
+                const url = URL.createObjectURL(blob);
+
+                const iframe = document.createElement('iframe');
+                iframe.style.display = 'none';
+                iframe.src = url;
+
+                let resolved = false;
+                function cleanup() {
+                    if (resolved) return;
+                    resolved = true;
+                    try { URL.revokeObjectURL(url); } catch (_) {}
+                    try { document.body.removeChild(iframe); } catch (_) {}
+                }
+
+                iframe.onload = function() {
+                    try {
+                        const win = iframe.contentWindow;
+                        const issues = [];
+
+                        // navigator.webdriver should be identical across contexts
+                        const mainWebdriver = navigator.webdriver;
+                        const frameWebdriver = win.navigator.webdriver;
+                        if (mainWebdriver !== frameWebdriver) {
+                            issues.push({
+                                reason: 'webdriverMismatch',
+                                description: `navigator.webdriver mismatch: main=${mainWebdriver}, iframe=${frameWebdriver}`
+                            });
+                        }
+
+                        // CDP markers in iframe
+                        const cdpMarkers = [
+                            '__cdp_eval', '__cdp_js_executor', '__selenium_eval',
+                            '__fxdriver_eval', '__webdriver_eval', 'cdc_adoQpoasnfa76pfcZLmcfl_'
+                        ];
+                        for (const marker of cdpMarkers) {
+                            if (typeof win[marker] !== 'undefined') {
+                                issues.push({
+                                    reason: 'cdpMarkerInIframe',
+                                    description: `CDP marker ${marker} found in blob iframe`
+                                });
+                            }
+                        }
+
+                        // User-Agent should match
+                        if (navigator.userAgent !== win.navigator.userAgent) {
+                            issues.push({
+                                reason: 'userAgentMismatch',
+                                description: 'User-Agent mismatch between main frame and blob iframe'
+                            });
+                        }
+
+                        // Languages should match
+                        const mainLangs = JSON.stringify(navigator.languages || []);
+                        const frameLangs = JSON.stringify(win.navigator.languages || []);
+                        if (mainLangs !== frameLangs) {
+                            issues.push({
+                                reason: 'languagesMismatch',
+                                description: 'navigator.languages mismatch between main frame and blob iframe'
+                            });
+                        }
+
+                        // window.chrome should be present in Chromium browsers
+                        const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
+                        if (isChrome && typeof win.chrome === 'undefined') {
+                            issues.push({
+                                reason: 'chromeMissingInIframe',
+                                description: 'window.chrome missing in blob iframe on Chromium browser'
+                            });
+                        }
+
+                        cleanup();
+
+                        if (issues.length > 0) {
+                            resolve({
+                                issues: issues.map(i => i.reason),
+                                description: issues.map(i => i.description).join('; ')
+                            });
+                        } else {
+                            resolve(false);
+                        }
+                    } catch (e) {
+                        cleanup();
+                        resolve(false);
+                    }
+                };
+
+                iframe.onerror = function() {
+                    cleanup();
+                    resolve(false);
+                };
+
+                // Timeout fallback
+                setTimeout(() => {
+                    cleanup();
+                    resolve(false);
+                }, 2000);
+
+                document.body.appendChild(iframe);
+            } catch (e) {
+                resolve(false);
+            }
+        });
     }
 
     /**
@@ -1039,6 +1154,148 @@
         container.innerHTML = '<div class="loading"><span class="spinner"></span>Running detection tests...</div>';
     }
 
+    /**
+     * Summarize detection results into a unified scoring model.
+     * Returns { tests, summary, uiStatus } where:
+     *   - tests: per-test objects for JSON output
+     *   - summary: counts and botDetected flag
+     *   - uiStatus: { statusClass, statusText } for UI badges
+     */
+    function summarizeResults(results) {
+        const tests = {};
+        let totalTests = 0, passed = 0, failed = 0;
+        let indicatorCount = 0;
+        const indicatorDetails = [];
+
+        const countIndicator = (name, value) => {
+            indicatorCount++;
+            const description = value && typeof value === 'object' && value.description
+                ? value.description
+                : (value === true ? 'Detected' : String(value));
+            indicatorDetails.push({ test: name, description });
+        };
+
+        // Boolean tests — value is exactly true when detected
+        const booleanTests = [
+            'hasWebdriverTrue', 'hasWebdriverInFrameTrue',
+            'isPlaywright', 'hasInconsistentChromeObject', 'isPhantom',
+            'isNightmare', 'isSequentum', 'isSeleniumChromeDefault',
+            'isAutomatedWithCDPInWebWorker'
+        ];
+        for (const name of booleanTests) {
+            if (!(name in results)) continue;
+            const value = results[name];
+            const isFailed = value === true;
+            tests[name] = {
+                passed: !isFailed,
+                value: value,
+                description: isFailed && value && value.description ? value.description : null
+            };
+            totalTests++;
+            if (isFailed) { failed++; countIndicator(name, value); }
+            else { passed++; }
+        }
+
+        // Object/truthy tests — truthy non-null value means detected
+        // Weak tests only count as indicators when another indicator already exists
+        const objectTests = [
+            'hasBotUserAgent', 'isAutomatedWithCDP',
+            'isHeadlessChrome', 'isWebGLInconsistent', 'hasInconsistentWorkerValues',
+            'hasInconsistentGPUFeatures', 'hasInconsistentClientHints',
+            'isIframeOverridden', 'hasBlobIframeCDPIssue', 'hasHeadlessChromeDefaultScreenResolution',
+            'hasSuspiciousWeakSignals', 'hasCanvasAvailabilityIssue',
+            'hasAudioFingerprintIssue', 'hasMissingBrowserChrome',
+            'hasScreenAvailabilityAnomaly', 'hasTouchInconsistency',
+            'hasNavigatorIntegrityViolation',
+            'suspiciousClientSideBehavior', 'superHumanSpeed', 'hasCDPMouseLeak', 'hasAdvancedBotSignals'
+        ];
+        const weakTests = [
+            'hasSuspiciousWeakSignals',
+            'hasCanvasAvailabilityIssue',
+            'hasAudioFingerprintIssue',
+            'hasScreenAvailabilityAnomaly',
+            'hasTouchInconsistency',
+            'suspiciousClientSideBehavior',
+            'superHumanSpeed',
+            'hasAdvancedBotSignals'
+        ];
+        for (const name of objectTests) {
+            if (!(name in results)) continue;
+            const value = results[name];
+            const isFailed = value !== false && value !== null && value !== undefined;
+            const isWeak = weakTests.includes(name);
+            const countsAsIndicator = isFailed && (!isWeak || indicatorCount > 0);
+
+            tests[name] = {
+                passed: !isFailed,
+                value: value,
+                description: isFailed && value && value.description ? value.description : null
+            };
+            totalTests++;
+            if (isFailed) {
+                failed++;
+                if (countsAsIndicator) countIndicator(name, value);
+            } else {
+                passed++;
+            }
+        }
+
+        // isAutomatedViaStackTrace: only count clear automation, not devtools
+        const stackTraceResult = results.isAutomatedViaStackTrace;
+        const isStackTraceAutomation = stackTraceResult && stackTraceResult.likelySource === 'automation';
+        tests['isAutomatedViaStackTrace'] = {
+            passed: !isStackTraceAutomation,
+            value: stackTraceResult,
+            description: stackTraceResult && stackTraceResult.description ? stackTraceResult.description : null
+        };
+        totalTests++;
+        if (isStackTraceAutomation) {
+            failed++;
+            countIndicator('isAutomatedViaStackTrace', stackTraceResult);
+        } else {
+            passed++;
+        }
+
+        // hasHighHardwareConcurrency is a weak signal — only count when other indicators exist
+        const hwResult = results.hasHighHardwareConcurrency;
+        const isHwBot = hwResult && indicatorCount > 0;
+        tests['hasHighHardwareConcurrency'] = {
+            passed: !isHwBot,
+            value: hwResult,
+            description: hwResult && hwResult.description ? hwResult.description : null
+        };
+        totalTests++;
+        if (isHwBot) {
+            failed++;
+            countIndicator('hasHighHardwareConcurrency', hwResult);
+        } else {
+            passed++;
+        }
+
+        const summary = {
+            totalTests,
+            passed,
+            failed,
+            indicatorCount,
+            indicatorDetails,
+            botDetected: indicatorCount >= 2
+        };
+
+        let statusClass, statusText;
+        if (indicatorCount >= 2) {
+            statusClass = 'bot';
+            statusText = `BOT DETECTED (${indicatorCount} indicators)`;
+        } else if (indicatorCount === 1) {
+            statusClass = 'pending';
+            statusText = `SUSPICIOUS (${indicatorCount} indicator)`;
+        } else {
+            statusClass = 'human';
+            statusText = 'HUMAN (0 indicators)';
+        }
+
+        return { tests, summary, uiStatus: { statusClass, statusText } };
+    }
+
     // Expose shared utilities
     window.BotDetectorShared = {
         checkBotUserAgent,
@@ -1059,6 +1316,7 @@
         checkInconsistentClientHints,
         checkInconsistentGPUFeatures,
         checkIframeOverridden,
+        checkBlobIframeCDP,
         checkHighHardwareConcurrency,
         checkHeadlessResolution,
         checkInconsistentWorkerValues,
@@ -1071,7 +1329,8 @@
         createResultElement,
         showLoading,
         runWorkerTests,
-        resetWorkerTestsCache
+        resetWorkerTestsCache,
+        summarizeResults
     };
 
 })();

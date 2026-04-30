@@ -70,6 +70,7 @@
         // Async tests (worker runs once; both checks share the same worker result)
         results.hasInconsistentWorkerValues = await runAsyncTest('hasInconsistentWorkerValues', () => shared.checkInconsistentWorkerValues());
         results.isAutomatedWithCDPInWebWorker = await runAsyncTest('isAutomatedWithCDPInWebWorker', () => shared.checkAutomatedWithCDPInWorker());
+        results.hasBlobIframeCDPIssue = await runAsyncTest('hasBlobIframeCDPIssue', () => shared.checkBlobIframeCDP());
 
         results.hasSuspiciousWeakSignals = runTest('hasSuspiciousWeakSignals', () => shared.analyzeWeakSignals());
         results.isAutomatedViaStackTrace = runTest('isAutomatedViaStackTrace', () => shared.checkCDPViaStackTrace());
@@ -113,6 +114,7 @@
             { label: 'hasInconsistentGPUFeatures', value: results.hasInconsistentGPUFeatures !== false, details: results.hasInconsistentGPUFeatures },
             { label: 'isIframeOverridden', value: results.isIframeOverridden !== false, details: results.isIframeOverridden },
             { label: 'hasInconsistentWorkerValues', value: results.hasInconsistentWorkerValues !== false, details: results.hasInconsistentWorkerValues },
+            { label: 'hasBlobIframeCDPIssue', value: results.hasBlobIframeCDPIssue !== false, details: results.hasBlobIframeCDPIssue },
             { label: 'hasHighHardwareConcurrency', value: results.hasHighHardwareConcurrency !== false, details: results.hasHighHardwareConcurrency },
             { label: 'hasHeadlessChromeDefaultScreenResolution', value: results.hasHeadlessChromeDefaultScreenResolution !== false, details: results.hasHeadlessChromeDefaultScreenResolution },
             { label: 'hasMissingBrowserChrome', value: results.hasMissingBrowserChrome !== false, details: results.hasMissingBrowserChrome },
@@ -142,75 +144,14 @@
     }
 
     /**
-     * Update overall bot/human status
+     * Update overall bot/human status using shared scoring
      */
     function updateOverallStatus(results) {
         const statusContainer = document.getElementById('overall-status');
         if (!statusContainer) return;
 
-        let botIndicators = 0;
-
-        // Boolean tests — truthy value means detected
-        const booleanTests = [
-            'hasBotUserAgent',
-            'hasWebdriverTrue',
-            'hasWebdriverInFrameTrue',
-            'isPlaywright',
-            'isPhantom',
-            'isNightmare',
-            'isSeleniumChromeDefault',
-            'hasInconsistentChromeObject',
-            'isAutomatedWithCDP',
-            'isAutomatedWithCDPInWebWorker',
-        ];
-        for (const test of booleanTests) {
-            if (results[test]) botIndicators++;
-        }
-
-        // Object/truthy tests
-        const objectTests = [
-            'isHeadlessChrome',
-            'isWebGLInconsistent',
-            'hasInconsistentWorkerValues',
-            'hasInconsistentGPUFeatures',
-            'hasInconsistentClientHints',
-            'isIframeOverridden',
-            'hasHeadlessChromeDefaultScreenResolution',
-            'hasSuspiciousWeakSignals',
-            'hasCanvasFingerprintIssue',
-            'hasAudioFingerprintIssue',
-            'hasMissingBrowserChrome',
-            'hasScreenAvailabilityAnomaly',
-            'hasTouchInconsistency',
-            'hasNavigatorIntegrityViolation',
-        ];
-        for (const test of objectTests) {
-            if (results[test]) botIndicators++;
-        }
-
-        // isAutomatedViaStackTrace: only count clear automation, not devtools
-        if (results.isAutomatedViaStackTrace && results.isAutomatedViaStackTrace.likelySource === 'automation') {
-            botIndicators++;
-        }
-
-        // hasHighHardwareConcurrency is a weak signal — count it only when other indicators exist
-        if (results.hasHighHardwareConcurrency && botIndicators > 0) {
-            botIndicators++;
-        }
-
-        let statusClass, statusText;
-        if (botIndicators >= 2) {
-            statusClass = 'bot';
-            statusText = `BOT DETECTED (${botIndicators} indicators)`;
-        } else if (botIndicators === 1) {
-            statusClass = 'pending';
-            statusText = `SUSPICIOUS (${botIndicators} indicator)`;
-        } else {
-            statusClass = 'human';
-            statusText = 'HUMAN (0 indicators)';
-        }
-
-        statusContainer.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span>`;
+        const { uiStatus } = shared.summarizeResults(results);
+        statusContainer.innerHTML = `<span class="status-badge ${uiStatus.statusClass}">${uiStatus.statusText}</span>`;
     }
 
     /**
@@ -243,6 +184,7 @@
      * Simulate bot signatures for testing
      */
     async function simulateBotMode() {
+        const originalDescriptor = Object.getOwnPropertyDescriptor(navigator, 'webdriver');
         const originalWebdriver = navigator.webdriver;
 
         Object.defineProperty(navigator, 'webdriver', {
@@ -251,13 +193,19 @@
         });
         window.$cdc_asdjflasutopfhvcZLmcfl_ = {};
 
+        // Reset worker cache so simulation gets fresh worker results
+        if (shared.resetWorkerTestsCache) {
+            shared.resetWorkerTestsCache();
+        }
+
         // Wait for the full detection run before restoring state
         await init();
 
-        Object.defineProperty(navigator, 'webdriver', {
-            get: () => originalWebdriver,
-            configurable: true
-        });
+        if (originalDescriptor) {
+            Object.defineProperty(navigator, 'webdriver', originalDescriptor);
+        } else {
+            delete navigator.webdriver;
+        }
         delete window.$cdc_asdjflasutopfhvcZLmcfl_;
     }
 

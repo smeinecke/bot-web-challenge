@@ -11,7 +11,7 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 ### Pages
 
 - **`index.html`** - Landing page with links to both tests
-- **`static.html`** - Static fingerprinting tests (20+ bot detection signals)
+- **`static.html`** - Static fingerprinting tests (21+ bot detection signals)
 - **`interactions.html`** - Interaction-based tests (mouse, typing, timing analysis)
 
 ### Static Detection Tests
@@ -36,6 +36,7 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 | `hasInconsistentClientHints` | Checks User-Agent Data consistency |
 | `hasInconsistentGPUFeatures` | Detects software rendering |
 | `isIframeOverridden` | Detects anti-detection scripts |
+| `hasBlobIframeCDPIssue` | Detects CDP/automation leaks via blob URL iframe |
 | `hasInconsistentWorkerValues` | Compares main/worker context values |
 | `hasHighHardwareConcurrency` | Detects VM/cloud environments (>16 cores) |
 | `hasHeadlessChromeDefaultScreenResolution` | Detects headless resolutions |

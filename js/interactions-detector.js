@@ -8,6 +8,9 @@
 
     const shared = window.BotDetectorShared;
 
+    // Simulation state
+    let _originalWebdriverDescriptor = null;
+
     // Tracking state
     let tracking = {
         mouseEvents: [],
@@ -77,6 +80,12 @@
             suspiciousKeyEvents: 0,
             keystrokeTimes: []
         };
+        if (_originalWebdriverDescriptor) {
+            try {
+                Object.defineProperty(navigator, 'webdriver', _originalWebdriverDescriptor);
+            } catch (_) {}
+            _originalWebdriverDescriptor = null;
+        }
     }
 
     /**
@@ -288,6 +297,7 @@
             hasInconsistentGPUFeatures: shared.checkInconsistentGPUFeatures(),
             hasInconsistentWorkerValues: await shared.checkInconsistentWorkerValues(),
             isAutomatedWithCDPInWebWorker: await shared.checkAutomatedWithCDPInWorker(),
+            hasBlobIframeCDPIssue: await shared.checkBlobIframeCDP(),
             hasAudioFingerprintIssue: await shared.checkAudioFingerprint(),
             hasNavigatorIntegrityViolation: shared.checkNavigatorIntegrity(),
         };
@@ -612,6 +622,7 @@
             { label: 'hasInconsistentGPUFeatures', value: results.hasInconsistentGPUFeatures !== false, details: results.hasInconsistentGPUFeatures },
             { label: 'isIframeOverridden', value: results.isIframeOverridden !== false, details: results.isIframeOverridden },
             { label: 'hasInconsistentWorkerValues', value: results.hasInconsistentWorkerValues !== false, details: results.hasInconsistentWorkerValues },
+            { label: 'hasBlobIframeCDPIssue', value: results.hasBlobIframeCDPIssue !== false, details: results.hasBlobIframeCDPIssue },
             { label: 'hasHighHardwareConcurrency', value: results.hasHighHardwareConcurrency !== false, details: results.hasHighHardwareConcurrency },
             { label: 'hasHeadlessChromeDefaultScreenResolution', value: results.hasHeadlessChromeDefaultScreenResolution !== false, details: results.hasHeadlessChromeDefaultScreenResolution },
             { label: 'hasMissingBrowserChrome', value: results.hasMissingBrowserChrome !== false, details: results.hasMissingBrowserChrome },
@@ -667,65 +678,14 @@
     }
 
     /**
-     * Update overall bot/human status
-     * Uses same comprehensive scoring logic as static-detector.js
+     * Update overall bot/human status using shared scoring
      */
     function updateOverallStatus(results) {
         const statusContainer = document.getElementById('overall-status');
         if (!statusContainer) return;
 
-        let botIndicators = 0;
-
-        // Boolean tests - value is exactly true when detected
-        const booleanTests = [
-            'hasWebdriverTrue', 'hasWebdriverInFrameTrue',
-            'isPlaywright', 'hasInconsistentChromeObject', 'isPhantom',
-            'isNightmare', 'isSequentum', 'isSeleniumChromeDefault',
-            'isAutomatedWithCDPInWebWorker'
-        ];
-        for (const test of booleanTests) {
-            if (results[test] === true) botIndicators++;
-        }
-
-        // Object/truthy tests - truthy non-null value means detected (includes objects)
-        const objectTests = [
-            'hasBotUserAgent', 'isAutomatedWithCDP',
-            'isHeadlessChrome', 'isWebGLInconsistent', 'hasInconsistentWorkerValues',
-            'hasInconsistentGPUFeatures', 'hasInconsistentClientHints',
-            'isIframeOverridden', 'hasHeadlessChromeDefaultScreenResolution',
-            'hasSuspiciousWeakSignals', 'hasCanvasAvailabilityIssue',
-            'hasAudioFingerprintIssue', 'hasMissingBrowserChrome',
-            'hasScreenAvailabilityAnomaly', 'hasTouchInconsistency',
-            'hasNavigatorIntegrityViolation', 'suspiciousClientSideBehavior',
-            'superHumanSpeed', 'hasCDPMouseLeak', 'hasAdvancedBotSignals'
-        ];
-        for (const test of objectTests) {
-            if (results[test]) botIndicators++;
-        }
-
-        // isAutomatedViaStackTrace: only count clear automation, not devtools
-        if (results.isAutomatedViaStackTrace && results.isAutomatedViaStackTrace.likelySource === 'automation') {
-            botIndicators++;
-        }
-
-        // hasHighHardwareConcurrency is a weak signal - only count when other indicators exist
-        if (results.hasHighHardwareConcurrency && botIndicators > 0) {
-            botIndicators++;
-        }
-
-        let statusClass, statusText;
-        if (botIndicators >= 2) {
-            statusClass = 'bot';
-            statusText = `BOT DETECTED (${botIndicators} indicators)`;
-        } else if (botIndicators === 1) {
-            statusClass = 'pending';
-            statusText = `SUSPICIOUS (${botIndicators} indicator)`;
-        } else {
-            statusClass = 'human';
-            statusText = 'HUMAN (0 indicators)';
-        }
-
-        statusContainer.innerHTML = `<span class="status-badge ${statusClass}">${statusText}</span>`;
+        const { uiStatus } = shared.summarizeResults(results);
+        statusContainer.innerHTML = `<span class="status-badge ${uiStatus.statusClass}">${uiStatus.statusText}</span>`;
     }
 
     /**
@@ -751,11 +711,18 @@
      * Simulate bot interactions for testing
      */
     function simulateBotMode() {
+        _originalWebdriverDescriptor = Object.getOwnPropertyDescriptor(navigator, 'webdriver');
+
         // Override navigator.webdriver
         Object.defineProperty(navigator, 'webdriver', {
             get: () => true,
             configurable: true
         });
+
+        // Reset worker cache so simulation gets fresh worker results
+        if (shared.resetWorkerTestsCache) {
+            shared.resetWorkerTestsCache();
+        }
 
         // Pre-fill form quickly
         const emailField = document.getElementById('email');

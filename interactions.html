@@ -95,11 +95,7 @@
                     document.getElementById('results-card').scrollIntoView({ behavior: 'smooth' });
                 }, 200);
             } else {
-                // Restore webdriver to its original value and hide results
-                Object.defineProperty(navigator, 'webdriver', {
-                    get: () => undefined,
-                    configurable: true
-                });
+                // Let the detector restore the original descriptor and reset state
                 window.InteractionDetector.reset();
                 document.getElementById('results-card').style.display = 'none';
                 window.lastInteractionResults = null;
@@ -125,8 +121,9 @@
             const cleanResults = prepareJSONOutput(results);
             jsonDiv.innerHTML = `
                 <h3>JSON Output (for FlareSolverr integration)</h3>
-                <pre style="background: var(--bg-tertiary); padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.75rem; max-height: 400px; overflow-y: auto;"><code>${JSON.stringify(cleanResults, null, 2)}</code></pre>
+                <pre style="background: var(--bg-tertiary); padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.75rem; max-height: 400px; overflow-y: auto;"><code></code></pre>
             `;
+            jsonDiv.querySelector('code').textContent = JSON.stringify(cleanResults, null, 2);
             jsonDiv.scrollIntoView({ behavior: 'smooth' });
         }
 
@@ -145,135 +142,15 @@
         }
 
         function prepareJSONOutput(results) {
-            const output = {
+            const { tests, summary } = window.BotDetectorShared.summarizeResults(results);
+            return {
                 timestamp: new Date().toISOString(),
                 userAgent: navigator.userAgent,
                 url: window.location.href,
                 trackingStats: window.InteractionDetector ? window.InteractionDetector.getTrackingData() : null,
-                tests: {},
-                summary: {
-                    totalTests: 0,
-                    passed: 0,
-                    failed: 0,
-                    botDetected: false,
-                    indicatorCount: 0,
-                    indicatorDetails: []
-                }
+                tests: tests,
+                summary: summary
             };
-
-            // Boolean tests - value is exactly true when detected
-            const booleanTests = [
-                'hasWebdriverTrue', 'hasWebdriverInFrameTrue',
-                'isPlaywright', 'hasInconsistentChromeObject', 'isPhantom',
-                'isNightmare', 'isSequentum', 'isSeleniumChromeDefault',
-                'isAutomatedWithCDPInWebWorker'
-            ];
-
-            // Object/truthy tests - truthy non-null value means detected (includes objects)
-            const objectTests = [
-                'hasBotUserAgent', 'isAutomatedWithCDP',
-                'isHeadlessChrome', 'isWebGLInconsistent', 'hasInconsistentWorkerValues',
-                'hasInconsistentGPUFeatures', 'hasInconsistentClientHints',
-                'isIframeOverridden', 'hasHeadlessChromeDefaultScreenResolution',
-                'hasSuspiciousWeakSignals', 'hasCanvasAvailabilityIssue',
-                'hasAudioFingerprintIssue', 'hasMissingBrowserChrome',
-                'hasScreenAvailabilityAnomaly', 'hasTouchInconsistency',
-                'hasNavigatorIntegrityViolation', 'suspiciousClientSideBehavior',
-                'superHumanSpeed', 'hasCDPMouseLeak', 'hasAdvancedBotSignals'
-            ];
-
-            // All test names for iteration
-            const testNames = [...booleanTests, ...objectTests, 'isAutomatedViaStackTrace', 'hasHighHardwareConcurrency'];
-
-            let indicatorCount = 0;
-            const indicatorDetails = [];
-
-            // Helper to count an indicator
-            const countIndicator = (name, value) => {
-                indicatorCount++;
-                const description = value && typeof value === 'object' && value.description
-                    ? value.description
-                    : (value === true ? 'Detected' : String(value));
-                indicatorDetails.push({ test: name, description });
-            };
-
-            // Process boolean tests (exactly true)
-            for (const name of booleanTests) {
-                const value = results[name];
-                const isFailed = value === true;
-
-                output.tests[name] = {
-                    passed: !isFailed,
-                    value: value,
-                    description: isFailed && value && value.description ? value.description : null
-                };
-
-                output.summary.totalTests++;
-                if (isFailed) {
-                    output.summary.failed++;
-                    countIndicator(name, value);
-                } else {
-                    output.summary.passed++;
-                }
-            }
-
-            // Process object/truthy tests (any truthy value counts as detected)
-            for (const name of objectTests) {
-                const value = results[name];
-                const isFailed = value !== false && value !== null && value !== undefined;
-
-                output.tests[name] = {
-                    passed: !isFailed,
-                    value: value,
-                    description: isFailed && value && value.description ? value.description : null
-                };
-
-                output.summary.totalTests++;
-                if (isFailed) {
-                    output.summary.failed++;
-                    countIndicator(name, value);
-                } else {
-                    output.summary.passed++;
-                }
-            }
-
-            // isAutomatedViaStackTrace: only count clear automation, not devtools or unknown
-            const stackTraceResult = results.isAutomatedViaStackTrace;
-            const isStackTraceAutomation = stackTraceResult && stackTraceResult.likelySource === 'automation';
-            output.tests['isAutomatedViaStackTrace'] = {
-                passed: !isStackTraceAutomation,
-                value: stackTraceResult,
-                description: stackTraceResult && stackTraceResult.description ? stackTraceResult.description : null
-            };
-            output.summary.totalTests++;
-            if (isStackTraceAutomation) {
-                output.summary.failed++;
-                countIndicator('isAutomatedViaStackTrace', stackTraceResult);
-            } else {
-                output.summary.passed++;
-            }
-
-            // hasHighHardwareConcurrency is a weak signal - only count when other indicators exist
-            const hwConcurrencyResult = results.hasHighHardwareConcurrency;
-            const isHwConcurrencyBot = hwConcurrencyResult && indicatorCount > 0;
-            output.tests['hasHighHardwareConcurrency'] = {
-                passed: !isHwConcurrencyBot,
-                value: hwConcurrencyResult,
-                description: hwConcurrencyResult && hwConcurrencyResult.description ? hwConcurrencyResult.description : null
-            };
-            output.summary.totalTests++;
-            if (isHwConcurrencyBot) {
-                output.summary.failed++;
-                countIndicator('hasHighHardwareConcurrency', hwConcurrencyResult);
-            } else {
-                output.summary.passed++;
-            }
-
-            output.summary.indicatorCount = indicatorCount;
-            output.summary.indicatorDetails = indicatorDetails;
-            output.summary.botDetected = indicatorCount >= 2;
-
-            return output;
         }
     </script>
 </body>
