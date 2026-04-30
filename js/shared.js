@@ -835,8 +835,8 @@
     }
 
     /**
-     * Check if browser chrome UI is missing (outerWidth <= innerWidth when not in fullscreen)
-     * Real browsers always have some UI chrome adding height/width; headless browsers don't.
+     * Check if browser chrome UI is missing (outer < inner is impossible in real browsers)
+     * Real browsers always have UI chrome making outer >= inner; headless browsers can have outer < inner.
      */
     function checkMissingBrowserChrome() {
         if (window.outerWidth === 0 || window.outerHeight === 0) {
@@ -851,14 +851,17 @@
         // In fullscreen mode outerWidth === innerWidth is expected, so skip the check
         if (document.fullscreenElement) return false;
 
-        if (window.outerWidth <= window.innerWidth && window.outerHeight <= window.innerHeight) {
+        // outer < inner is physically impossible in a real browser (would mean content is larger than the window).
+        // outer === inner is common in maximized windows and tiling WMs (especially on Linux),
+        // so we only flag when outer is strictly smaller than inner.
+        if (window.outerWidth < window.innerWidth || window.outerHeight < window.innerHeight) {
             return {
                 reason: 'noUIChrome',
                 outerWidth: window.outerWidth,
                 outerHeight: window.outerHeight,
                 innerWidth: window.innerWidth,
                 innerHeight: window.innerHeight,
-                description: `No browser UI chrome (outer: ${window.outerWidth}x${window.outerHeight} ≤ inner: ${window.innerWidth}x${window.innerHeight})`
+                description: `outer < inner (outer: ${window.outerWidth}x${window.outerHeight}, inner: ${window.innerWidth}x${window.innerHeight}) — impossible in real browser`
             };
         }
 
