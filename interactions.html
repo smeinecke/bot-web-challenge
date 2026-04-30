@@ -147,6 +147,11 @@
                 timestamp: new Date().toISOString(),
                 userAgent: navigator.userAgent,
                 url: window.location.href,
+                detector: {
+                    name: 'bot-web-challenge',
+                    version: '0.1.0',
+                    schemaVersion: 1
+                },
                 trackingStats: window.InteractionDetector ? window.InteractionDetector.getTrackingData() : null,
                 tests: tests,
                 summary: summary

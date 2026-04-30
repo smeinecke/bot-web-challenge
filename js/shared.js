@@ -110,7 +110,25 @@
         const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
         if (!isChrome) return false;
 
-        return typeof window.chrome === 'undefined';
+        if (typeof window.chrome === 'undefined') {
+            return { reason: 'chromeMissing', description: 'window.chrome missing on Chromium browser' };
+        }
+
+        // Modern stealth environments often provide window.chrome but with shallow or
+        // malformed subobjects. Check expected Chrome object shape.
+        const expectedKeys = ['runtime', 'app', 'csi', 'loadTimes'];
+        const presentKeys = expectedKeys.filter(k => k in (window.chrome || {}));
+        // All can be legitimately absent in modern Chrome (csi/loadTimes removed),
+        // but `runtime` and `app` are usually present.
+        if (typeof window.chrome === 'object' && presentKeys.length === 0) {
+            return {
+                reason: 'chromeShallow',
+                description: 'window.chrome exists but has no expected subobjects — likely spoofed',
+                weak: true
+            };
+        }
+
+        return false;
     }
 
     /**
@@ -500,9 +518,9 @@
             // Check if we got valid pixel data
             const data = canvas.toDataURL();
             if (!data || data.length < 100) {
-                // Empty canvas is a weak signal (privacy browsers, remote desktops,
-                // enterprise environments may disable it). Do not count as bot proof.
-                return false;
+                // Empty or malformed canvas data is a weak signal (privacy browsers, remote
+                // desktops, enterprise environments may disable it). Not standalone bot proof.
+                return { reason: 'emptyOrMalformedCanvasData', weak: true, description: 'Canvas returned empty or malformed data URL' };
             }
 
             return false;
@@ -843,7 +861,7 @@
         const workerData = await runWorkerTests();
 
         if (workerData.error) {
-            return { reason: 'workerError', message: workerData.error, description: 'Web Worker failed to execute' };
+            return { reason: 'workerError', inconclusive: true, severity: 'weak', message: workerData.error, description: 'Web Worker failed to execute — inconclusive, may be browser restrictions' };
         }
 
         if (workerData.notSupported) {
@@ -851,7 +869,7 @@
         }
 
         if (workerData.timeout) {
-            return { reason: 'workerTimeout', description: 'Web Worker timed out - possible automation blocking' };
+            return { reason: 'workerTimeout', inconclusive: true, severity: 'weak', description: 'Web Worker timed out — inconclusive, may be browser restrictions or slow device' };
         }
 
         const inconsistencies = [];
@@ -913,10 +931,27 @@
 
     /**
      * Check CDP in Web Worker — combines marker check and prepareStackTrace trap
+     * Returns structured evidence with severity based on detection source.
      */
     async function checkAutomatedWithCDPInWorker() {
         const workerData = await runWorkerTests();
-        return workerData.hasCDP === true || workerData.hasCDPWorker === true;
+
+        if (workerData.error || workerData.timeout || workerData.notSupported) {
+            return false; // Cannot determine
+        }
+
+        if (workerData.hasCDP === true || workerData.hasCDPWorker === true) {
+            // hasCDP = explicit marker found (stronger evidence)
+            // hasCDPWorker = prepareStackTrace side effect (medium confidence, can be devtools)
+            const reason = workerData.hasCDP ? 'workerCDPMarker' : 'workerStackTraceSideEffect';
+            const severity = workerData.hasCDP ? 'strong' : 'medium';
+            const description = workerData.hasCDP
+                ? 'CDP marker found in worker context'
+                : 'Worker Error.prepareStackTrace side effect suggests CDP inspection';
+            return { reason, severity, description };
+        }
+
+        return false;
     }
 
     /**
@@ -969,7 +1004,9 @@
     }
 
     /**
-     * Create a result item element
+     * Create a result item element.
+     * Supports tri-state: passed (NO), failed (YES with severity label), inconclusive (INCONCLUSIVE).
+     * Displays severity (WEAK/MEDIUM/STRONG) instead of plain YES when available.
      */
     function createResultElement(label, value, isBoolean = true, details = null, showLikelySource = false) {
         const div = document.createElement('div');
@@ -979,16 +1016,41 @@
         labelSpan.className = 'label';
         labelSpan.textContent = label;
 
+        // Determine status from raw value and details
+        const isInconclusive = !isBoolean && details && typeof details === 'object' && details.inconclusive === true;
+
+        // Special case: stack trace source — only fail when automation source is confirmed
+        const isStackTraceDevTools = showLikelySource && details && details.likelySource === 'devtools';
+
+        const isFailed = isStackTraceDevTools
+            ? false
+            : (!isInconclusive && (isBoolean ? value === true : (value !== false && value !== null && value !== undefined)));
+
+        // Determine display label based on severity info in details
+        let displayLabel, displayClass;
+        if (isInconclusive) {
+            displayLabel = 'INCONCLUSIVE';
+            displayClass = 'inconclusive';
+        } else if (isFailed) {
+            const sev = details && typeof details === 'object' && details.severity
+                ? details.severity.toLowerCase()
+                : (details && typeof details === 'object' && details.weak ? 'weak' : 'strong');
+            displayLabel = sev.toUpperCase();
+            displayClass = sev;
+        } else {
+            displayLabel = 'NO';
+            displayClass = 'false';
+        }
+
         const valueSpan = document.createElement('span');
-        const isFailed = isBoolean ? value : (value !== false && value !== null && value !== undefined);
-        valueSpan.className = 'value ' + (isFailed ? 'true' : 'false');
-        valueSpan.textContent = isFailed ? 'YES' : 'NO';
+        valueSpan.className = 'value ' + displayClass;
+        valueSpan.textContent = displayLabel;
 
         div.appendChild(labelSpan);
         div.appendChild(valueSpan);
 
-        // Add details tooltip for failed tests
-        if (isFailed && details) {
+        // Add details tooltip for failed or inconclusive tests
+        if ((isFailed || isInconclusive) && details) {
             const detailsSpan = document.createElement('span');
             detailsSpan.className = 'result-details';
 
@@ -1118,23 +1180,52 @@
     function checkNavigatorIntegrity() {
         const suspicious = [];
 
-        // navigator.webdriver should be an accessor on the prototype, not an own value property
-        const wdDescriptor = Object.getOwnPropertyDescriptor(navigator, 'webdriver');
-        if (wdDescriptor) {
-            // If it's an own value property set to false, it was explicitly patched
-            if (!wdDescriptor.get && wdDescriptor.value === false) {
-                suspicious.push('webdriverForcedFalse');
-            }
-            // If configurable is false but the value is overridden, that's a red flag
-            if (wdDescriptor.get && wdDescriptor.get.toString().indexOf('[native code]') === -1) {
-                suspicious.push('webdriverGetterPatched');
+        function isNative(fn) {
+            if (typeof fn !== 'function') return false;
+            try {
+                return Function.prototype.toString.call(fn).indexOf('[native code]') !== -1;
+            } catch (_) {
+                return false;
             }
         }
 
+        // navigator.webdriver should be an accessor on the prototype, not an own value property
+        const wdOwn = Object.getOwnPropertyDescriptor(navigator, 'webdriver');
+        const wdProto = Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver');
+        if (wdOwn) {
+            // If it's an own value property set to false, it was explicitly patched
+            if (!wdOwn.get && wdOwn.value === false) {
+                suspicious.push('webdriverForcedFalse');
+            }
+            // If configurable is false but the value is overridden, that's a red flag
+            if (wdOwn.get && !isNative(wdOwn.get)) {
+                suspicious.push('webdriverGetterPatched');
+            }
+        }
+        if (wdProto && wdProto.get && !isNative(wdProto.get)) {
+            suspicious.push('webdriverProtoGetterPatched');
+        }
+
         // Check if userAgent own property was set directly on navigator (evasion technique)
-        const uaDescriptor = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
-        if (uaDescriptor && uaDescriptor.get && uaDescriptor.get.toString().indexOf('[native code]') === -1) {
+        const uaOwn = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+        const uaProto = Object.getOwnPropertyDescriptor(Navigator.prototype, 'userAgent');
+        if (uaOwn && uaOwn.get && !isNative(uaOwn.get)) {
             suspicious.push('userAgentGetterPatched');
+        }
+        if (uaProto && uaProto.get && !isNative(uaProto.get)) {
+            suspicious.push('userAgentProtoGetterPatched');
+        }
+
+        // languages getter tampering
+        const langProto = Object.getOwnPropertyDescriptor(Navigator.prototype, 'languages');
+        if (langProto && langProto.get && !isNative(langProto.get)) {
+            suspicious.push('languagesProtoGetterPatched');
+        }
+
+        // plugins getter tampering
+        const pluginsProto = Object.getOwnPropertyDescriptor(Navigator.prototype, 'plugins');
+        if (pluginsProto && pluginsProto.get && !isNative(pluginsProto.get)) {
+            suspicious.push('pluginsProtoGetterPatched');
         }
 
         if (suspicious.length > 0) {
@@ -1144,6 +1235,289 @@
             };
         }
 
+        return false;
+    }
+
+    /**
+     * Normalize notification permission values for comparison.
+     * 'default' and 'prompt' are semantically equivalent in modern APIs.
+     */
+    function normalizeNotificationPermission(value) {
+        return value === 'default' ? 'prompt' : value;
+    }
+
+    async function checkPermissionsConsistency() {
+        if (!navigator.permissions || typeof navigator.permissions.query !== 'function') {
+            // Permissions API missing — weak signal, some privacy browsers disable it
+            return false;
+        }
+
+        const issues = [];
+
+        if (typeof Notification !== 'undefined') {
+            try {
+                const permissionStatus = await navigator.permissions.query({ name: 'notifications' });
+                const notificationPermission = normalizeNotificationPermission(Notification.permission);
+                const permissionState = normalizeNotificationPermission(
+                    permissionStatus && permissionStatus.state
+                );
+
+                if (notificationPermission !== permissionState) {
+                    issues.push({
+                        reason: 'notificationPermissionMismatch',
+                        notificationPermission,
+                        permissionState
+                    });
+                }
+            } catch (e) {
+                // Firefox/private settings/extensions may reject or restrict this.
+                // Do not treat as bot evidence.
+            }
+        }
+
+        // clipboard-read should exist in modern Chromium
+        try {
+            await navigator.permissions.query({ name: 'clipboard-read' });
+        } catch (e) {
+            // Some privacy modes or older browsers may not support — not conclusive
+        }
+
+        if (issues.length > 0) {
+            return {
+                reason: 'permissionsInconsistency',
+                issues,
+                weak: true,
+                severity: 'weak',
+                description: `Permission API inconsistency: ${issues.map(i => i.reason).join(', ')}`
+            };
+        }
+        return false;
+    }
+
+    /**
+     * Check plugins and MIME types consistency.
+     * Chrome desktop should have plugins. Zero plugins or descriptor tampering
+     * can indicate headless/stealth environments.
+     */
+    function checkPluginsMimeTypes() {
+        const isChromeDesktop = /Chrome/.test(navigator.userAgent) &&
+                                /Google Inc/.test(navigator.vendor) &&
+                                !/Mobile|Android|iPhone|iPad/.test(navigator.userAgent);
+
+        const plugins = navigator.plugins;
+        const mimeTypes = navigator.mimeTypes;
+
+        if (!plugins || !mimeTypes) {
+            return false; // Not supported or restricted
+        }
+
+        // Check for zero plugins on desktop Chrome — rare but possible in incognito
+        if (isChromeDesktop && plugins.length === 0) {
+            return {
+                reason: 'zeroPluginsChromeDesktop',
+                weak: true,
+                description: 'Desktop Chrome reports zero plugins — possible incognito/headless/privacy mode'
+            };
+        }
+
+        // Check for descriptor tampering on plugins
+        try {
+            const desc = Object.getOwnPropertyDescriptor(Navigator.prototype, 'plugins');
+            if (desc && desc.get) {
+                const str = Function.prototype.toString.call(desc.get);
+                if (str.indexOf('[native code]') === -1) {
+                    return {
+                        reason: 'pluginsGetterPatched',
+                        severity: 'medium',
+                        description: 'navigator.plugins getter has been tampered with'
+                    };
+                }
+            }
+        } catch (_) {}
+
+        // Check for plugins without mimeTypes (inconsistent)
+        if (plugins.length > 0 && mimeTypes.length === 0) {
+            return {
+                reason: 'pluginsWithoutMimeTypes',
+                weak: true,
+                description: 'navigator.plugins exists but navigator.mimeTypes is empty'
+            };
+        }
+
+        // Check prototype tags — poor stealth patches often get these wrong
+        try {
+            const pluginTag = Object.prototype.toString.call(plugins);
+            const mimeTag = Object.prototype.toString.call(mimeTypes);
+            const issues = [];
+
+            if (pluginTag !== '[object PluginArray]') {
+                issues.push('invalidPluginArrayTag');
+            }
+            if (mimeTag !== '[object MimeTypeArray]') {
+                issues.push('invalidMimeTypeArrayTag');
+            }
+            if (issues.length > 0) {
+                return {
+                    reason: issues[0],
+                    issues,
+                    weak: true,
+                    description: `Prototype tag mismatch: ${issues.join(', ')}`
+                };
+            }
+        } catch (_) {}
+
+        return false;
+    }
+
+    /**
+     * Check locale, timezone, and Intl coherence.
+     * Detects mismatches between navigator.language, navigator.languages,
+     * timezone, and Intl formatting locale.
+     */
+    function checkLocaleTimezoneIntl() {
+        const issues = [];
+
+        try {
+            const dtf = Intl.DateTimeFormat().resolvedOptions();
+            const nf = Intl.NumberFormat().resolvedOptions();
+            const coll = Intl.Collator().resolvedOptions();
+            const tz = dtf.timeZone;
+            const locale = dtf.locale;
+
+            // navigator.language should roughly match Intl locale prefix
+            const navLang = (navigator.language || '').toLowerCase();
+            if (locale && !locale.toLowerCase().startsWith(navLang.split('-')[0])) {
+                issues.push('intlLocaleMismatch');
+            }
+
+            // Check for obvious UTC/GMT timezone with non-English primary language
+            const isEn = navLang.startsWith('en');
+            if (!isEn && (tz === 'UTC' || tz === 'GMT' || tz === 'Etc/UTC')) {
+                issues.push('nonEnglishBrowserInUTC');
+            }
+
+            // navigator.languages should contain navigator.language
+            const langs = navigator.languages || [];
+            if (langs.length > 0 && !langs.some(l => l.toLowerCase().startsWith(navLang.split('-')[0]))) {
+                issues.push('languagesListMismatch');
+            }
+
+            // Different Intl constructors should agree on locale
+            const nfLocale = nf.locale || '';
+            const collLocale = coll.locale || '';
+            if (locale && nfLocale && locale !== nfLocale) {
+                issues.push('intlLocaleInconsistent');
+            }
+            if (locale && collLocale && locale !== collLocale) {
+                issues.push('intlCollatorLocaleInconsistent');
+            }
+        } catch (_) {
+            // Intl not supported
+        }
+
+        if (issues.length > 0) {
+            return {
+                issues,
+                weak: true,
+                description: `Locale/timezone/Intl coherence issues: ${issues.join(', ')}`
+            };
+        }
+        return false;
+    }
+
+    /**
+     * Check viewport, screen, DPR, and orientation coherence.
+     * Detects impossible or unlikely combinations indicating emulation.
+     */
+    function checkViewportScreenCoherence() {
+        const issues = [];
+        const ua = navigator.userAgent || '';
+        const isMobileUA = /Mobile|Android|iPhone|iPad/.test(ua);
+
+        const dpr = window.devicePixelRatio || 1;
+        const sw = window.screen.width || 0;
+        const sh = window.screen.height || 0;
+        const iw = window.innerWidth || 0;
+        const ih = window.innerHeight || 0;
+
+        // Mobile UA but DPR == 1 on "retina"-like screen sizes — weak signal
+        if (isMobileUA && dpr === 1 && sw >= 375) {
+            issues.push('mobileUANoRetinaDpr');
+        }
+
+        // inner much larger than outer (non-fullscreen) is impossible in real browsers
+        if (!document.fullscreenElement && (window.outerWidth > 0 && iw > window.outerWidth * 1.5)) {
+            issues.push('innerMuchLargerThanOuter');
+        }
+
+        // Orientation mismatch (only if orientation API exists)
+        if (screen.orientation && screen.orientation.type) {
+            const isPortrait = screen.orientation.type.startsWith('portrait');
+            if (isPortrait && sw > sh) {
+                issues.push('portraitOrientationLandscapeDimensions');
+            }
+            if (!isPortrait && sh > sw) {
+                issues.push('landscapeOrientationPortraitDimensions');
+            }
+        }
+
+        // Check visualViewport if available
+        if (window.visualViewport) {
+            const vv = window.visualViewport;
+
+            // Scale should be in reasonable bounds
+            if (vv.scale <= 0 || vv.scale > 10) {
+                issues.push('invalidVisualViewportScale');
+            }
+
+            // At scale 1, visualViewport.width should roughly match innerWidth
+            if (vv.scale === 1 && Math.abs(vv.width - iw) > 2) {
+                issues.push('visualViewportWidthMismatch');
+            }
+
+            // Similar check for height
+            if (vv.scale === 1 && Math.abs(vv.height - ih) > 2) {
+                issues.push('visualViewportHeightMismatch');
+            }
+        }
+
+        if (issues.length > 0) {
+            return {
+                issues,
+                weak: true,
+                description: `Viewport/screen coherence issues: ${issues.join(', ')}`
+            };
+        }
+        return false;
+    }
+
+    /**
+     * Extended automation-specific globals check.
+     * Goes beyond the basic Playwright/Phantom/Nightmare/Selenium checks.
+     */
+    function checkAutomationGlobalsExtended() {
+        const markers = [
+            'domAutomation', 'domAutomationController',
+            '__webdriver_script_fn', '__driver_evaluate',
+            '__webdriver_evaluate', '__selenium_unwrapped',
+            '__fxdriver_unwrapped', '_Selenium_IDE_Recorder',
+            'cdc_adoQpoasnfa76pfcZLmcfl_',
+            '$cdc_asdjflasutopfhvcZLmcfl_'
+        ];
+
+        const found = [];
+        for (const marker of markers) {
+            if (typeof window[marker] !== 'undefined' || typeof document[marker] !== 'undefined') {
+                found.push(marker);
+            }
+        }
+
+        if (found.length > 0) {
+            return {
+                markers: found,
+                description: `Automation globals detected: ${found.join(', ')}`
+            };
+        }
         return false;
     }
 
@@ -1158,83 +1532,138 @@
      * Summarize detection results into a unified scoring model.
      * Returns { tests, summary, uiStatus } where:
      *   - tests: per-test objects for JSON output
-     *   - summary: counts and botDetected flag
+     *   - summary: counts, hard failures, weak findings, indicatorCount, botDetected flag
      *   - uiStatus: { statusClass, statusText } for UI badges
+     *
+     * Scoring model: strong findings have weight 2, medium 1, weak 0.5.
+     * botDetected threshold is score >= 2 (equivalent to one strong finding).
      */
     function summarizeResults(results) {
         const tests = {};
-        let totalTests = 0, passed = 0, failed = 0;
-        let indicatorCount = 0;
+        let totalTests = 0, passed = 0, hardFailures = 0, weakFindings = 0, inconclusiveCount = 0;
+        let score = 0;
         const indicatorDetails = [];
 
-        const countIndicator = (name, value) => {
-            indicatorCount++;
+        const countIndicator = (name, value, weight) => {
+            score += weight;
             const description = value && typeof value === 'object' && value.description
                 ? value.description
                 : (value === true ? 'Detected' : String(value));
-            indicatorDetails.push({ test: name, description });
+            indicatorDetails.push({ test: name, description, severity: weight === 2 ? 'strong' : weight === 1 ? 'medium' : 'weak' });
         };
 
         // Boolean tests — value is exactly true when detected
+        // All boolean tests are STRONG indicators (direct automation evidence)
         const booleanTests = [
             'hasWebdriverTrue', 'hasWebdriverInFrameTrue',
-            'isPlaywright', 'hasInconsistentChromeObject', 'isPhantom',
-            'isNightmare', 'isSequentum', 'isSeleniumChromeDefault',
-            'isAutomatedWithCDPInWebWorker'
+            'isPlaywright', 'isPhantom',
+            'isNightmare', 'isSequentum', 'isSeleniumChromeDefault'
         ];
         for (const name of booleanTests) {
             if (!(name in results)) continue;
             const value = results[name];
             const isFailed = value === true;
             tests[name] = {
+                status: isFailed ? 'failed' : 'passed',
                 passed: !isFailed,
-                value: value,
-                description: isFailed && value && value.description ? value.description : null
-            };
-            totalTests++;
-            if (isFailed) { failed++; countIndicator(name, value); }
-            else { passed++; }
-        }
-
-        // Object/truthy tests — truthy non-null value means detected
-        // Weak tests only count as indicators when another indicator already exists
-        const objectTests = [
-            'hasBotUserAgent', 'isAutomatedWithCDP',
-            'isHeadlessChrome', 'isWebGLInconsistent', 'hasInconsistentWorkerValues',
-            'hasInconsistentGPUFeatures', 'hasInconsistentClientHints',
-            'isIframeOverridden', 'hasBlobIframeCDPIssue', 'hasHeadlessChromeDefaultScreenResolution',
-            'hasSuspiciousWeakSignals', 'hasCanvasAvailabilityIssue',
-            'hasAudioFingerprintIssue', 'hasMissingBrowserChrome',
-            'hasScreenAvailabilityAnomaly', 'hasTouchInconsistency',
-            'hasNavigatorIntegrityViolation',
-            'suspiciousClientSideBehavior', 'superHumanSpeed', 'hasCDPMouseLeak', 'hasAdvancedBotSignals'
-        ];
-        const weakTests = [
-            'hasSuspiciousWeakSignals',
-            'hasCanvasAvailabilityIssue',
-            'hasAudioFingerprintIssue',
-            'hasScreenAvailabilityAnomaly',
-            'hasTouchInconsistency',
-            'suspiciousClientSideBehavior',
-            'superHumanSpeed',
-            'hasAdvancedBotSignals'
-        ];
-        for (const name of objectTests) {
-            if (!(name in results)) continue;
-            const value = results[name];
-            const isFailed = value !== false && value !== null && value !== undefined;
-            const isWeak = weakTests.includes(name);
-            const countsAsIndicator = isFailed && (!isWeak || indicatorCount > 0);
-
-            tests[name] = {
-                passed: !isFailed,
+                severity: 'strong',
                 value: value,
                 description: isFailed && value && value.description ? value.description : null
             };
             totalTests++;
             if (isFailed) {
-                failed++;
-                if (countsAsIndicator) countIndicator(name, value);
+                hardFailures++;
+                countIndicator(name, value, 2);
+            } else {
+                passed++;
+            }
+        }
+
+        // Object/truthy tests — truthy non-null value means detected
+        // Classified by severity: strong, medium, weak
+        const objectTestsStrong = [
+            'hasBotUserAgent', 'isAutomatedWithCDP',
+            'isHeadlessChrome', 'isIframeOverridden', 'hasBlobIframeCDPIssue',
+            'hasMissingBrowserChrome', 'hasAutomationGlobalsExtended'
+        ];
+        const objectTestsMedium = [
+            'hasInconsistentChromeObject',
+            'hasWebGLInconsistent',
+            'hasInconsistentGPUFeatures',
+            'hasHeadlessChromeDefaultScreenResolution',
+            'hasCDPMouseLeak',
+            'hasNavigatorIntegrityViolation',
+            'hasInconsistentClientHints',
+            'isAutomatedWithCDPInWebWorker'
+        ];
+        const objectTestsWeak = [
+            'hasSuspiciousWeakSignals',
+            'hasCanvasAvailabilityIssue',
+            'hasAudioFingerprintIssue',
+            'hasScreenAvailabilityAnomaly',
+            'hasTouchInconsistency',
+            'hasPermissionsInconsistency',
+            'hasPluginsMimeTypesIssue',
+            'hasLocaleTimezoneIntlIssue',
+            'hasViewportScreenCoherenceIssue',
+            'hasInconsistentWorkerValues', // Inconclusive cases are weak
+            'suspiciousClientSideBehavior',
+            'superHumanSpeed',
+            'hasAdvancedBotSignals'
+        ];
+        const allObjectTests = [...objectTestsStrong, ...objectTestsMedium, ...objectTestsWeak];
+
+        for (const name of allObjectTests) {
+            if (!(name in results)) continue;
+            const value = results[name];
+
+            // Check for inconclusive results first
+            const isInconclusive = value && typeof value === 'object' && value.inconclusive === true;
+            const isFailed = !isInconclusive && value !== false && value !== null && value !== undefined;
+
+            // Determine severity from result object or fallback to list-based
+            let severity = 'medium';
+            let weight = 1;
+
+            // Result object can override severity
+            if (value && typeof value === 'object') {
+                if (value.severity === 'strong') { severity = 'strong'; weight = 2; }
+                else if (value.severity === 'medium') { severity = 'medium'; weight = 1; }
+                else if (value.severity === 'weak') { severity = 'weak'; weight = 0.5; }
+                else if (value.weak === true) { severity = 'weak'; weight = 0.5; }
+            }
+
+            // Fallback to list-based if not specified in result
+            if (severity === 'medium') {
+                if (objectTestsStrong.includes(name)) { severity = 'strong'; weight = 2; }
+                else if (objectTestsWeak.includes(name)) { severity = 'weak'; weight = 0.5; }
+            }
+
+            // Special handling: worker values inconclusive (timeout/error) shouldn't be strong
+            if (name === 'hasInconsistentWorkerValues' && value && (value.inconclusive || value.reason === 'workerTimeout' || value.reason === 'workerError')) {
+                severity = 'weak';
+                weight = 0.5;
+            }
+
+            // Weak findings only count as indicators if there's already strong/medium evidence
+            const countsAsIndicator = isFailed && (weight >= 1 || score > 0);
+
+            tests[name] = {
+                status: isInconclusive ? 'inconclusive' : isFailed ? 'failed' : 'passed',
+                passed: !isFailed && !isInconclusive,
+                inconclusive: isInconclusive,
+                severity,
+                countsAsIndicator,
+                value: value,
+                description: (isFailed || isInconclusive) && value && value.description ? value.description : null
+            };
+            totalTests++;
+            if (isInconclusive) {
+                inconclusiveCount++;
+            } else if (isFailed) {
+                if (weight >= 1) hardFailures++;
+                else weakFindings++;
+                if (countsAsIndicator) countIndicator(name, value, weight);
             } else {
                 passed++;
             }
@@ -1244,53 +1673,68 @@
         const stackTraceResult = results.isAutomatedViaStackTrace;
         const isStackTraceAutomation = stackTraceResult && stackTraceResult.likelySource === 'automation';
         tests['isAutomatedViaStackTrace'] = {
+            status: isStackTraceAutomation ? 'failed' : 'passed',
             passed: !isStackTraceAutomation,
+            severity: 'strong',
             value: stackTraceResult,
             description: stackTraceResult && stackTraceResult.description ? stackTraceResult.description : null
         };
         totalTests++;
         if (isStackTraceAutomation) {
-            failed++;
-            countIndicator('isAutomatedViaStackTrace', stackTraceResult);
+            hardFailures++;
+            countIndicator('isAutomatedViaStackTrace', stackTraceResult, 2);
         } else {
             passed++;
         }
 
         // hasHighHardwareConcurrency is a weak signal — only count when other indicators exist
         const hwResult = results.hasHighHardwareConcurrency;
-        const isHwBot = hwResult && indicatorCount > 0;
+        const isHwBot = hwResult && score > 0;
         tests['hasHighHardwareConcurrency'] = {
-            passed: !isHwBot,
+            status: hwResult ? 'failed' : 'passed',
+            passed: !hwResult,
+            severity: 'weak',
+            countsAsIndicator: isHwBot,
             value: hwResult,
             description: hwResult && hwResult.description ? hwResult.description : null
         };
         totalTests++;
         if (isHwBot) {
-            failed++;
-            countIndicator('hasHighHardwareConcurrency', hwResult);
+            weakFindings++;
+            countIndicator('hasHighHardwareConcurrency', hwResult, 0.5);
+        } else if (hwResult) {
+            // Present but no other indicators - still a finding but weak
+            weakFindings++;
         } else {
             passed++;
         }
 
+        const indicatorCount = indicatorDetails.length;
         const summary = {
             totalTests,
             passed,
-            failed,
+            failed: hardFailures + weakFindings,
+            hardFailures,
+            weakFindings,
+            inconclusive: inconclusiveCount,
+            inconclusiveCount,
             indicatorCount,
             indicatorDetails,
-            botDetected: indicatorCount >= 2
+            score: Math.round(score * 10) / 10, // Round to 1 decimal
+            suspicious: score >= 0.5 && score < 2,
+            botDetected: score >= 2
         };
 
         let statusClass, statusText;
-        if (indicatorCount >= 2) {
+        if (score >= 2) {
             statusClass = 'bot';
-            statusText = `BOT DETECTED (${indicatorCount} indicators)`;
-        } else if (indicatorCount === 1) {
+            statusText = `BOT DETECTED (score: ${summary.score})`;
+        } else if (score >= 0.5) {
             statusClass = 'pending';
-            statusText = `SUSPICIOUS (${indicatorCount} indicator)`;
+            statusText = `SUSPICIOUS (score: ${summary.score})`;
         } else {
             statusClass = 'human';
-            statusText = 'HUMAN (0 indicators)';
+            statusText = 'HUMAN';
         }
 
         return { tests, summary, uiStatus: { statusClass, statusText } };
@@ -1326,6 +1770,11 @@
         checkScreenAvailability,
         checkTouchInconsistency,
         checkNavigatorIntegrity,
+        checkPermissionsConsistency,
+        checkPluginsMimeTypes,
+        checkLocaleTimezoneIntl,
+        checkViewportScreenCoherence,
+        checkAutomationGlobalsExtended,
         createResultElement,
         showLoading,
         runWorkerTests,

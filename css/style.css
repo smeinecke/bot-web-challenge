@@ -129,9 +129,25 @@ header p {
     font-size: 0.75rem;
 }
 
+.value.strong,
 .value.true {
     background-color: rgba(248, 81, 73, 0.2);
     color: var(--accent-danger);
+}
+
+.value.medium {
+    background-color: rgba(255, 166, 87, 0.2);
+    color: #ffa657;
+}
+
+.value.weak {
+    background-color: rgba(210, 153, 34, 0.2);
+    color: var(--accent-warning);
+}
+
+.value.inconclusive {
+    background-color: rgba(88, 166, 255, 0.2);
+    color: var(--accent-primary);
 }
 
 .value.false {

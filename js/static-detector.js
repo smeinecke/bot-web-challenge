@@ -76,6 +76,11 @@
         results.isAutomatedViaStackTrace = runTest('isAutomatedViaStackTrace', () => shared.checkCDPViaStackTrace());
         results.hasCanvasAvailabilityIssue = runTest('hasCanvasAvailabilityIssue', () => shared.checkCanvasAvailability());
         results.hasAudioFingerprintIssue = await runAsyncTest('hasAudioFingerprintIssue', () => shared.checkAudioFingerprint());
+        results.hasPermissionsInconsistency = await runAsyncTest('hasPermissionsInconsistency', () => shared.checkPermissionsConsistency());
+        results.hasPluginsMimeTypesIssue = runTest('hasPluginsMimeTypesIssue', () => shared.checkPluginsMimeTypes());
+        results.hasLocaleTimezoneIntlIssue = runTest('hasLocaleTimezoneIntlIssue', () => shared.checkLocaleTimezoneIntl());
+        results.hasViewportScreenCoherenceIssue = runTest('hasViewportScreenCoherenceIssue', () => shared.checkViewportScreenCoherence());
+        results.hasAutomationGlobalsExtended = runTest('hasAutomationGlobalsExtended', () => shared.checkAutomationGlobalsExtended());
 
         results._debug = {
             userAgent: navigator.userAgent,
@@ -106,25 +111,30 @@
             { label: 'isNightmare', value: results.isNightmare },
             { label: 'isSequentum', value: results.isSequentum },
             { label: 'isSeleniumChromeDefault', value: results.isSeleniumChromeDefault },
-            { label: 'isHeadlessChrome', value: results.isHeadlessChrome !== false, details: results.isHeadlessChrome },
-            { label: 'isWebGLInconsistent', value: results.isWebGLInconsistent !== false, details: results.isWebGLInconsistent },
+            { label: 'isHeadlessChrome', value: results.isHeadlessChrome, details: results.isHeadlessChrome },
+            { label: 'isWebGLInconsistent', value: results.isWebGLInconsistent, details: results.isWebGLInconsistent },
             { label: 'isAutomatedWithCDP', value: results.isAutomatedWithCDP },
             { label: 'isAutomatedWithCDPInWebWorker', value: results.isAutomatedWithCDPInWebWorker },
-            { label: 'hasInconsistentClientHints', value: results.hasInconsistentClientHints !== false, details: results.hasInconsistentClientHints },
-            { label: 'hasInconsistentGPUFeatures', value: results.hasInconsistentGPUFeatures !== false, details: results.hasInconsistentGPUFeatures },
-            { label: 'isIframeOverridden', value: results.isIframeOverridden !== false, details: results.isIframeOverridden },
-            { label: 'hasInconsistentWorkerValues', value: results.hasInconsistentWorkerValues !== false, details: results.hasInconsistentWorkerValues },
-            { label: 'hasBlobIframeCDPIssue', value: results.hasBlobIframeCDPIssue !== false, details: results.hasBlobIframeCDPIssue },
-            { label: 'hasHighHardwareConcurrency', value: results.hasHighHardwareConcurrency !== false, details: results.hasHighHardwareConcurrency },
-            { label: 'hasHeadlessChromeDefaultScreenResolution', value: results.hasHeadlessChromeDefaultScreenResolution !== false, details: results.hasHeadlessChromeDefaultScreenResolution },
-            { label: 'hasMissingBrowserChrome', value: results.hasMissingBrowserChrome !== false, details: results.hasMissingBrowserChrome },
-            { label: 'hasScreenAvailabilityAnomaly', value: results.hasScreenAvailabilityAnomaly !== false, details: results.hasScreenAvailabilityAnomaly },
-            { label: 'hasTouchInconsistency', value: results.hasTouchInconsistency !== false, details: results.hasTouchInconsistency },
-            { label: 'hasNavigatorIntegrityViolation', value: results.hasNavigatorIntegrityViolation !== false, details: results.hasNavigatorIntegrityViolation },
-            { label: 'hasSuspiciousWeakSignals', value: results.hasSuspiciousWeakSignals !== false, details: results.hasSuspiciousWeakSignals },
-            { label: 'isAutomatedViaStackTrace', value: results.isAutomatedViaStackTrace && results.isAutomatedViaStackTrace.likelySource === 'automation', details: results.isAutomatedViaStackTrace, showLikelySource: true },
-            { label: 'hasCanvasAvailabilityIssue', value: results.hasCanvasAvailabilityIssue !== false, details: results.hasCanvasAvailabilityIssue },
-            { label: 'hasAudioFingerprintIssue', value: results.hasAudioFingerprintIssue !== false, details: results.hasAudioFingerprintIssue },
+            { label: 'hasInconsistentClientHints', value: results.hasInconsistentClientHints, details: results.hasInconsistentClientHints },
+            { label: 'hasInconsistentGPUFeatures', value: results.hasInconsistentGPUFeatures, details: results.hasInconsistentGPUFeatures },
+            { label: 'isIframeOverridden', value: results.isIframeOverridden, details: results.isIframeOverridden },
+            { label: 'hasInconsistentWorkerValues', value: results.hasInconsistentWorkerValues, details: results.hasInconsistentWorkerValues },
+            { label: 'hasBlobIframeCDPIssue', value: results.hasBlobIframeCDPIssue, details: results.hasBlobIframeCDPIssue },
+            { label: 'hasHighHardwareConcurrency', value: results.hasHighHardwareConcurrency, details: results.hasHighHardwareConcurrency },
+            { label: 'hasHeadlessChromeDefaultScreenResolution', value: results.hasHeadlessChromeDefaultScreenResolution, details: results.hasHeadlessChromeDefaultScreenResolution },
+            { label: 'hasMissingBrowserChrome', value: results.hasMissingBrowserChrome, details: results.hasMissingBrowserChrome },
+            { label: 'hasScreenAvailabilityAnomaly', value: results.hasScreenAvailabilityAnomaly, details: results.hasScreenAvailabilityAnomaly },
+            { label: 'hasTouchInconsistency', value: results.hasTouchInconsistency, details: results.hasTouchInconsistency },
+            { label: 'hasNavigatorIntegrityViolation', value: results.hasNavigatorIntegrityViolation, details: results.hasNavigatorIntegrityViolation },
+            { label: 'hasSuspiciousWeakSignals', value: results.hasSuspiciousWeakSignals, details: results.hasSuspiciousWeakSignals },
+            { label: 'isAutomatedViaStackTrace', value: results.isAutomatedViaStackTrace, details: results.isAutomatedViaStackTrace, showLikelySource: true },
+            { label: 'hasCanvasAvailabilityIssue', value: results.hasCanvasAvailabilityIssue, details: results.hasCanvasAvailabilityIssue },
+            { label: 'hasAudioFingerprintIssue', value: results.hasAudioFingerprintIssue, details: results.hasAudioFingerprintIssue },
+            { label: 'hasPermissionsInconsistency', value: results.hasPermissionsInconsistency, details: results.hasPermissionsInconsistency },
+            { label: 'hasPluginsMimeTypesIssue', value: results.hasPluginsMimeTypesIssue, details: results.hasPluginsMimeTypesIssue },
+            { label: 'hasLocaleTimezoneIntlIssue', value: results.hasLocaleTimezoneIntlIssue, details: results.hasLocaleTimezoneIntlIssue },
+            { label: 'hasViewportScreenCoherenceIssue', value: results.hasViewportScreenCoherenceIssue, details: results.hasViewportScreenCoherenceIssue },
+            { label: 'hasAutomationGlobalsExtended', value: results.hasAutomationGlobalsExtended, details: results.hasAutomationGlobalsExtended },
         ];
 
         for (const item of resultItems) {
@@ -151,7 +161,11 @@
         if (!statusContainer) return;
 
         const { uiStatus } = shared.summarizeResults(results);
-        statusContainer.innerHTML = `<span class="status-badge ${uiStatus.statusClass}">${uiStatus.statusText}</span>`;
+        statusContainer.textContent = '';
+        const badge = document.createElement('span');
+        badge.className = `status-badge ${uiStatus.statusClass}`;
+        badge.textContent = uiStatus.statusText;
+        statusContainer.appendChild(badge);
     }
 
     /**
@@ -174,7 +188,11 @@
         try {
             displayResults(results, resultsContainer);
         } catch (e) {
-            resultsContainer.innerHTML = `<div class="error">Error displaying results: ${e.message}</div>`;
+            resultsContainer.textContent = '';
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'error';
+            errorDiv.textContent = `Error displaying results: ${e.message}`;
+            resultsContainer.appendChild(errorDiv);
         }
 
         window.lastStaticResults = results;
@@ -185,7 +203,6 @@
      */
     async function simulateBotMode() {
         const originalDescriptor = Object.getOwnPropertyDescriptor(navigator, 'webdriver');
-        const originalWebdriver = navigator.webdriver;
 
         Object.defineProperty(navigator, 'webdriver', {
             get: () => true,

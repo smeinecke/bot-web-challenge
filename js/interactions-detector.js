@@ -300,6 +300,11 @@
             hasBlobIframeCDPIssue: await shared.checkBlobIframeCDP(),
             hasAudioFingerprintIssue: await shared.checkAudioFingerprint(),
             hasNavigatorIntegrityViolation: shared.checkNavigatorIntegrity(),
+            hasPermissionsInconsistency: await shared.checkPermissionsConsistency(),
+            hasPluginsMimeTypesIssue: shared.checkPluginsMimeTypes(),
+            hasLocaleTimezoneIntlIssue: shared.checkLocaleTimezoneIntl(),
+            hasViewportScreenCoherenceIssue: shared.checkViewportScreenCoherence(),
+            hasAutomationGlobalsExtended: shared.checkAutomationGlobalsExtended(),
         };
 
         // Interaction-based tests
@@ -315,10 +320,28 @@
      * Analyze for suspicious client-side behavior
      */
     function analyzeSuspiciousBehavior() {
+        // Require minimum observation window before scoring interaction signals
+        // to avoid false positives from keyboard-only users, touch users, autofill,
+        // password managers, accessibility tools, or fast interactions.
+        const sessionDuration = tracking.formStartTime ? Date.now() - tracking.formStartTime : 0;
+        const hasEnoughObservation =
+            (tracking.submitTime && tracking.firstFocusTime && (tracking.submitTime - tracking.firstFocusTime) > 2000) ||
+            tracking.totalKeystrokes > 5 ||
+            tracking.mouseEvents.length > 20 ||
+            sessionDuration > 3000;
+
+        if (!hasEnoughObservation) {
+            return {
+                inconclusive: true,
+                reason: 'insufficientObservationWindow',
+                description: 'Not enough interaction data to analyze (keyboard-only, touch, autofill, or fast interaction)'
+            };
+        }
+
         const suspicious = [];
 
-        // Check for no mouse movement
-        if (tracking.mouseEvents.length < 10) {
+        // Check for no mouse movement (only meaningful if there was enough time to move)
+        if (tracking.mouseEvents.length < 10 && tracking.totalKeystrokes > 0) {
             suspicious.push('insufficientMouseMovement');
         }
 
@@ -340,14 +363,14 @@
             }
         }
 
-        // Check for instant form completion
+        // Check for instant form completion (requires >1s observation window already)
         const formDuration = tracking.submitTime - tracking.firstFocusTime;
-        if (tracking.firstFocusTime && formDuration < 1000) { // Less than 1 second
+        if (tracking.firstFocusTime && tracking.submitTime && formDuration < 500) {
             suspicious.push('instantFormCompletion');
         }
 
-        // Check for no typing (paste-only)
-        if (tracking.totalKeystrokes === 0 && tracking.submitTime) {
+        // Check for no typing (paste-only) — only flag if we saw some interaction time
+        if (tracking.totalKeystrokes === 0 && tracking.submitTime && formDuration > 1000) {
             const emailField = document.getElementById('email');
             const passwordField = document.getElementById('password');
             if ((emailField && emailField.value) || (passwordField && passwordField.value)) {
@@ -582,10 +605,10 @@
         resultsGrid.className = 'results-grid';
 
         const resultItems = [
-            { label: 'suspiciousClientSideBehavior', value: results.suspiciousClientSideBehavior !== false, details: results.suspiciousClientSideBehavior },
-            { label: 'superHumanSpeed', value: results.superHumanSpeed !== false, details: results.superHumanSpeed },
-            { label: 'hasCDPMouseLeak', value: results.hasCDPMouseLeak !== false, details: results.hasCDPMouseLeak },
-            { label: 'hasAdvancedBotSignals', value: results.hasAdvancedBotSignals !== false, details: results.hasAdvancedBotSignals },
+            { label: 'suspiciousClientSideBehavior', value: results.suspiciousClientSideBehavior, details: results.suspiciousClientSideBehavior },
+            { label: 'superHumanSpeed', value: results.superHumanSpeed, details: results.superHumanSpeed },
+            { label: 'hasCDPMouseLeak', value: results.hasCDPMouseLeak, details: results.hasCDPMouseLeak },
+            { label: 'hasAdvancedBotSignals', value: results.hasAdvancedBotSignals, details: results.hasAdvancedBotSignals },
         ];
 
         for (const item of resultItems) {
@@ -614,25 +637,30 @@
             { label: 'isNightmare', value: results.isNightmare },
             { label: 'isSequentum', value: results.isSequentum },
             { label: 'isSeleniumChromeDefault', value: results.isSeleniumChromeDefault },
-            { label: 'isHeadlessChrome', value: results.isHeadlessChrome !== false, details: results.isHeadlessChrome },
-            { label: 'isWebGLInconsistent', value: results.isWebGLInconsistent !== false, details: results.isWebGLInconsistent },
+            { label: 'isHeadlessChrome', value: results.isHeadlessChrome, details: results.isHeadlessChrome },
+            { label: 'isWebGLInconsistent', value: results.isWebGLInconsistent, details: results.isWebGLInconsistent },
             { label: 'isAutomatedWithCDP', value: results.isAutomatedWithCDP },
             { label: 'isAutomatedWithCDPInWebWorker', value: results.isAutomatedWithCDPInWebWorker },
-            { label: 'hasInconsistentClientHints', value: results.hasInconsistentClientHints !== false, details: results.hasInconsistentClientHints },
-            { label: 'hasInconsistentGPUFeatures', value: results.hasInconsistentGPUFeatures !== false, details: results.hasInconsistentGPUFeatures },
-            { label: 'isIframeOverridden', value: results.isIframeOverridden !== false, details: results.isIframeOverridden },
-            { label: 'hasInconsistentWorkerValues', value: results.hasInconsistentWorkerValues !== false, details: results.hasInconsistentWorkerValues },
-            { label: 'hasBlobIframeCDPIssue', value: results.hasBlobIframeCDPIssue !== false, details: results.hasBlobIframeCDPIssue },
-            { label: 'hasHighHardwareConcurrency', value: results.hasHighHardwareConcurrency !== false, details: results.hasHighHardwareConcurrency },
-            { label: 'hasHeadlessChromeDefaultScreenResolution', value: results.hasHeadlessChromeDefaultScreenResolution !== false, details: results.hasHeadlessChromeDefaultScreenResolution },
-            { label: 'hasMissingBrowserChrome', value: results.hasMissingBrowserChrome !== false, details: results.hasMissingBrowserChrome },
-            { label: 'hasScreenAvailabilityAnomaly', value: results.hasScreenAvailabilityAnomaly !== false, details: results.hasScreenAvailabilityAnomaly },
-            { label: 'hasTouchInconsistency', value: results.hasTouchInconsistency !== false, details: results.hasTouchInconsistency },
-            { label: 'hasNavigatorIntegrityViolation', value: results.hasNavigatorIntegrityViolation !== false, details: results.hasNavigatorIntegrityViolation },
-            { label: 'hasSuspiciousWeakSignals', value: results.hasSuspiciousWeakSignals !== false, details: results.hasSuspiciousWeakSignals },
-            { label: 'isAutomatedViaStackTrace', value: results.isAutomatedViaStackTrace && results.isAutomatedViaStackTrace.likelySource === 'automation', details: results.isAutomatedViaStackTrace, showLikelySource: true },
-            { label: 'hasCanvasAvailabilityIssue', value: results.hasCanvasAvailabilityIssue !== false, details: results.hasCanvasAvailabilityIssue },
-            { label: 'hasAudioFingerprintIssue', value: results.hasAudioFingerprintIssue !== false, details: results.hasAudioFingerprintIssue },
+            { label: 'hasInconsistentClientHints', value: results.hasInconsistentClientHints, details: results.hasInconsistentClientHints },
+            { label: 'hasInconsistentGPUFeatures', value: results.hasInconsistentGPUFeatures, details: results.hasInconsistentGPUFeatures },
+            { label: 'isIframeOverridden', value: results.isIframeOverridden, details: results.isIframeOverridden },
+            { label: 'hasInconsistentWorkerValues', value: results.hasInconsistentWorkerValues, details: results.hasInconsistentWorkerValues },
+            { label: 'hasBlobIframeCDPIssue', value: results.hasBlobIframeCDPIssue, details: results.hasBlobIframeCDPIssue },
+            { label: 'hasHighHardwareConcurrency', value: results.hasHighHardwareConcurrency, details: results.hasHighHardwareConcurrency },
+            { label: 'hasHeadlessChromeDefaultScreenResolution', value: results.hasHeadlessChromeDefaultScreenResolution, details: results.hasHeadlessChromeDefaultScreenResolution },
+            { label: 'hasMissingBrowserChrome', value: results.hasMissingBrowserChrome, details: results.hasMissingBrowserChrome },
+            { label: 'hasScreenAvailabilityAnomaly', value: results.hasScreenAvailabilityAnomaly, details: results.hasScreenAvailabilityAnomaly },
+            { label: 'hasTouchInconsistency', value: results.hasTouchInconsistency, details: results.hasTouchInconsistency },
+            { label: 'hasNavigatorIntegrityViolation', value: results.hasNavigatorIntegrityViolation, details: results.hasNavigatorIntegrityViolation },
+            { label: 'hasSuspiciousWeakSignals', value: results.hasSuspiciousWeakSignals, details: results.hasSuspiciousWeakSignals },
+            { label: 'isAutomatedViaStackTrace', value: results.isAutomatedViaStackTrace, details: results.isAutomatedViaStackTrace, showLikelySource: true },
+            { label: 'hasCanvasAvailabilityIssue', value: results.hasCanvasAvailabilityIssue, details: results.hasCanvasAvailabilityIssue },
+            { label: 'hasAudioFingerprintIssue', value: results.hasAudioFingerprintIssue, details: results.hasAudioFingerprintIssue },
+            { label: 'hasPermissionsInconsistency', value: results.hasPermissionsInconsistency, details: results.hasPermissionsInconsistency },
+            { label: 'hasPluginsMimeTypesIssue', value: results.hasPluginsMimeTypesIssue, details: results.hasPluginsMimeTypesIssue },
+            { label: 'hasLocaleTimezoneIntlIssue', value: results.hasLocaleTimezoneIntlIssue, details: results.hasLocaleTimezoneIntlIssue },
+            { label: 'hasViewportScreenCoherenceIssue', value: results.hasViewportScreenCoherenceIssue, details: results.hasViewportScreenCoherenceIssue },
+            { label: 'hasAutomationGlobalsExtended', value: results.hasAutomationGlobalsExtended, details: results.hasAutomationGlobalsExtended },
         ];
 
         for (const item of staticItems) {
@@ -663,17 +691,24 @@
     function addTrackingStats(container) {
         const statsDiv = document.createElement('div');
         statsDiv.className = 'info-section';
-        statsDiv.innerHTML = `
-            <h3>Tracking Statistics</h3>
-            <ul>
-                <li>Mouse events: ${tracking.mouseEvents.length}</li>
-                <li>Key events: ${tracking.keyEvents.length}</li>
-                <li>Mouse path length: ${Math.round(tracking.mousePathLength)} px</li>
-                <li>Total keystrokes: ${tracking.totalKeystrokes}</li>
-                <li>Form completion time: ${tracking.submitTime && tracking.firstFocusTime ?
-                    (tracking.submitTime - tracking.firstFocusTime) + ' ms' : 'N/A'}</li>
-            </ul>
-        `;
+        const heading = document.createElement('h3');
+        heading.textContent = 'Tracking Statistics';
+        const ul = document.createElement('ul');
+        const stats = [
+            `Mouse events: ${tracking.mouseEvents.length}`,
+            `Key events: ${tracking.keyEvents.length}`,
+            `Mouse path length: ${Math.round(tracking.mousePathLength)} px`,
+            `Total keystrokes: ${tracking.totalKeystrokes}`,
+            `Form completion time: ${tracking.submitTime && tracking.firstFocusTime ?
+                (tracking.submitTime - tracking.firstFocusTime) + ' ms' : 'N/A'}`
+        ];
+        stats.forEach(text => {
+            const li = document.createElement('li');
+            li.textContent = text;
+            ul.appendChild(li);
+        });
+        statsDiv.appendChild(heading);
+        statsDiv.appendChild(ul);
         container.appendChild(statsDiv);
     }
 
@@ -685,7 +720,11 @@
         if (!statusContainer) return;
 
         const { uiStatus } = shared.summarizeResults(results);
-        statusContainer.innerHTML = `<span class="status-badge ${uiStatus.statusClass}">${uiStatus.statusText}</span>`;
+        statusContainer.textContent = '';
+        const badge = document.createElement('span');
+        badge.className = `status-badge ${uiStatus.statusClass}`;
+        badge.textContent = uiStatus.statusText;
+        statusContainer.appendChild(badge);
     }
 
     /**
