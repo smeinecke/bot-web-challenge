@@ -6,6 +6,31 @@ A standalone bot detection challenge for testing browser automation stealth capa
 
 ## Overview
 
+This project has been migrated to TypeScript with Vite for improved developer experience and build-time metadata injection. The detection functionality remains the same, with added type safety and automated deployment via GitHub Actions.
+
+### Tech Stack
+
+- **TypeScript** - Type-safe JavaScript with modern language features
+- **Vite** - Fast build tool with hot module replacement
+- **GitHub Actions** - Automated CI/CD and GitHub Pages deployment
+
+### Build Info
+
+The JSON output now includes build metadata:
+
+```json
+{
+  "detector": {
+    "name": "bot-web-challenge",
+    "version": "0.1.0",
+    "schemaVersion": 1,
+    "buildTime": "2026-04-30T12:34:56.000Z",
+    "gitCommit": "abc1234",
+    "gitBranch": "main"
+  }
+}
+```
+
 These pages implement bot detection techniques similar to [deviceandbrowserinfo.com](https://deviceandbrowserinfo.com/are_you_a_bot) but run locally for faster, more reliable testing.
 
 ### Pages
@@ -61,6 +86,59 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 | `suspiciousClientSideBehavior` | Mouse path analysis, form timing |
 | `superHumanSpeed` | Typing speed > 15 CPS |
 | `hasCDPMouseLeak` | Detects CDP screen coordinate leak |
+
+## Development
+
+### Prerequisites
+
+- Node.js 22+
+- npm
+
+### Setup
+
+```bash
+npm install
+```
+
+### Development Server
+
+```bash
+npm run dev
+```
+
+Runs the dev server on `http://localhost:5173`.
+
+### Build
+
+```bash
+npm run typecheck
+npm run build
+```
+
+The built site will be in the `dist/` directory.
+
+## Deployment
+
+### GitHub Pages (Automatic)
+
+The project is configured for automatic deployment to GitHub Pages:
+
+1. **Repository Settings** → **Pages**
+   - Source: **GitHub Actions**
+
+2. On every push to `main`:
+   - CI runs `npm run typecheck` and `npm run build`
+   - The `dist/` folder is automatically deployed
+
+3. Manual deployment: Trigger the `deploy-pages.yml` workflow via **Actions** tab
+
+### GitHub Pages Base Path
+
+The Vite config automatically detects GitHub Pages environment via `GITHUB_PAGES` and `GITHUB_REPOSITORY` environment variables. For project pages (e.g., `https://username.github.io/repo-name/`), the base path is set automatically.
+
+### Manual Deployment
+
+Copy the contents of `dist/` to your web server. The project is a static site with no backend requirements.
 
 ## Usage
 

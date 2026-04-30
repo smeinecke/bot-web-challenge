@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Interaction-Based Detection | Bot Detection Challenge</title>
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
     <div class="container">
@@ -72,91 +72,6 @@
         </div>
     </div>
 
-    <script src="js/shared.js"></script>
-    <script src="js/interactions-detector.js"></script>
-    <script>
-        // Show results card when form is submitted
-        document.getElementById('login-form').addEventListener('submit', function(e) {
-            e.preventDefault();
-            document.getElementById('results-card').style.display = 'block';
-
-            // Scroll to results
-            setTimeout(() => {
-                document.getElementById('results-card').scrollIntoView({ behavior: 'smooth' });
-            }, 100);
-        });
-
-        function toggleBotMode() {
-            const checkbox = document.getElementById('simulate-bot');
-            if (checkbox.checked) {
-                window.InteractionDetector.simulateBot();
-                document.getElementById('results-card').style.display = 'block';
-                setTimeout(() => {
-                    document.getElementById('results-card').scrollIntoView({ behavior: 'smooth' });
-                }, 200);
-            } else {
-                // Let the detector restore the original descriptor and reset state
-                window.InteractionDetector.reset();
-                document.getElementById('results-card').style.display = 'none';
-                window.lastInteractionResults = null;
-            }
-        }
-
-        function showJSONOutput() {
-            const results = window.lastInteractionResults;
-            if (!results) {
-                alert('Please submit the form first to generate results.');
-                return;
-            }
-
-            let jsonDiv = document.getElementById('json-output');
-            if (!jsonDiv) {
-                jsonDiv = document.createElement('div');
-                jsonDiv.id = 'json-output';
-                jsonDiv.className = 'card';
-                jsonDiv.style.marginTop = '1rem';
-                document.querySelector('.container').appendChild(jsonDiv);
-            }
-
-            const cleanResults = prepareJSONOutput(results);
-            jsonDiv.innerHTML = `
-                <h3>JSON Output (for FlareSolverr integration)</h3>
-                <pre style="background: var(--bg-tertiary); padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.75rem; max-height: 400px; overflow-y: auto;"><code></code></pre>
-            `;
-            jsonDiv.querySelector('code').textContent = JSON.stringify(cleanResults, null, 2);
-            jsonDiv.scrollIntoView({ behavior: 'smooth' });
-        }
-
-        function copyJSON() {
-            const results = window.lastInteractionResults;
-            if (!results) {
-                alert('Please submit the form first.');
-                return;
-            }
-            const cleanResults = prepareJSONOutput(results);
-            navigator.clipboard.writeText(JSON.stringify(cleanResults, null, 2)).then(() => {
-                alert('JSON copied to clipboard!');
-            }).catch(err => {
-                console.error('Failed to copy:', err);
-            });
-        }
-
-        function prepareJSONOutput(results) {
-            const { tests, summary } = window.BotDetectorShared.summarizeResults(results);
-            return {
-                timestamp: new Date().toISOString(),
-                userAgent: navigator.userAgent,
-                url: window.location.href,
-                detector: {
-                    name: 'bot-web-challenge',
-                    version: '0.1.0',
-                    schemaVersion: 1
-                },
-                trackingStats: window.InteractionDetector ? window.InteractionDetector.getTrackingData() : null,
-                tests: tests,
-                summary: summary
-            };
-        }
-    </script>
+    <script type="module" src="/src/pages/interactions.ts"></script>
 </body>
 </html>
