@@ -202,28 +202,67 @@
                     passed: 0,
                     failed: 0,
                     botDetected: false,
-                    indicatorCount: 0
+                    indicatorCount: 0,
+                    indicatorDetails: []
                 }
             };
 
-            const testNames = [
+            // Boolean tests - truthy value means detected
+            const booleanTests = [
                 'hasBotUserAgent', 'hasWebdriverTrue', 'hasWebdriverInFrameTrue',
                 'isPlaywright', 'hasInconsistentChromeObject', 'isPhantom',
                 'isNightmare', 'isSequentum', 'isSeleniumChromeDefault',
-                'isHeadlessChrome', 'isWebGLInconsistent', 'isAutomatedWithCDP',
-                'isAutomatedWithCDPInWebWorker', 'hasInconsistentClientHints',
-                'hasInconsistentGPUFeatures', 'isIframeOverridden',
-                'hasInconsistentWorkerValues', 'hasHighHardwareConcurrency',
-                'hasHeadlessChromeDefaultScreenResolution',
-                'hasMissingBrowserChrome', 'hasScreenAvailabilityAnomaly',
-                'hasTouchInconsistency', 'hasNavigatorIntegrityViolation',
-                'hasSuspiciousWeakSignals', 'isAutomatedViaStackTrace',
-                'hasCanvasFingerprintIssue', 'hasAudioFingerprintIssue'
+                'isAutomatedWithCDP', 'isAutomatedWithCDPInWebWorker'
             ];
 
-            let indicatorCount = 0;
+            // Object/truthy tests - object value means detected
+            const objectTests = [
+                'isHeadlessChrome', 'isWebGLInconsistent', 'hasInconsistentWorkerValues',
+                'hasInconsistentGPUFeatures', 'hasInconsistentClientHints',
+                'isIframeOverridden', 'hasHeadlessChromeDefaultScreenResolution',
+                'hasSuspiciousWeakSignals', 'hasCanvasFingerprintIssue',
+                'hasAudioFingerprintIssue', 'hasMissingBrowserChrome',
+                'hasScreenAvailabilityAnomaly', 'hasTouchInconsistency',
+                'hasNavigatorIntegrityViolation'
+            ];
 
-            for (const name of testNames) {
+            // All test names for iteration
+            const testNames = [...booleanTests, ...objectTests, 'isAutomatedViaStackTrace', 'hasHighHardwareConcurrency'];
+
+            let indicatorCount = 0;
+            const indicatorDetails = [];
+
+            // Helper to count an indicator
+            const countIndicator = (name, value) => {
+                indicatorCount++;
+                const description = value && typeof value === 'object' && value.description
+                    ? value.description
+                    : (value === true ? 'Detected' : String(value));
+                indicatorDetails.push({ test: name, description });
+            };
+
+            // Process boolean tests
+            for (const name of booleanTests) {
+                const value = results[name];
+                const isFailed = value === true;
+
+                output.tests[name] = {
+                    passed: !isFailed,
+                    value: value,
+                    description: isFailed && value && value.description ? value.description : null
+                };
+
+                output.summary.totalTests++;
+                if (isFailed) {
+                    output.summary.failed++;
+                    countIndicator(name, value);
+                } else {
+                    output.summary.passed++;
+                }
+            }
+
+            // Process object tests
+            for (const name of objectTests) {
                 const value = results[name];
                 const isFailed = value !== false && value !== null && value !== undefined;
 
@@ -236,13 +275,46 @@
                 output.summary.totalTests++;
                 if (isFailed) {
                     output.summary.failed++;
-                    indicatorCount++;
+                    countIndicator(name, value);
                 } else {
                     output.summary.passed++;
                 }
             }
 
+            // isAutomatedViaStackTrace: only count clear automation, not devtools
+            const stackTraceResult = results.isAutomatedViaStackTrace;
+            const isStackTraceAutomation = stackTraceResult && stackTraceResult.likelySource === 'automation';
+            output.tests['isAutomatedViaStackTrace'] = {
+                passed: !isStackTraceAutomation,
+                value: stackTraceResult,
+                description: stackTraceResult && stackTraceResult.description ? stackTraceResult.description : null
+            };
+            output.summary.totalTests++;
+            if (isStackTraceAutomation) {
+                output.summary.failed++;
+                countIndicator('isAutomatedViaStackTrace', stackTraceResult);
+            } else {
+                output.summary.passed++;
+            }
+
+            // hasHighHardwareConcurrency is a weak signal - only count when other indicators exist
+            const hwConcurrencyResult = results.hasHighHardwareConcurrency;
+            const isHwConcurrencyBot = hwConcurrencyResult && indicatorCount > 0;
+            output.tests['hasHighHardwareConcurrency'] = {
+                passed: !isHwConcurrencyBot,
+                value: hwConcurrencyResult,
+                description: hwConcurrencyResult && hwConcurrencyResult.description ? hwConcurrencyResult.description : null
+            };
+            output.summary.totalTests++;
+            if (isHwConcurrencyBot) {
+                output.summary.failed++;
+                countIndicator('hasHighHardwareConcurrency', hwConcurrencyResult);
+            } else {
+                output.summary.passed++;
+            }
+
             output.summary.indicatorCount = indicatorCount;
+            output.summary.indicatorDetails = indicatorDetails;
             output.summary.botDetected = indicatorCount >= 2;
 
             return output;

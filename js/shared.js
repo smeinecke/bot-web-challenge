@@ -6,11 +6,38 @@
 (function() {
     'use strict';
 
-    // Bot user agent patterns
-    const BOT_PATTERNS = [
-        /bot/i, /crawler/i, /spider/i, /scraper/i, /automated/i,
-        /headless/i, /phantom/i, /selenium/i, /puppeteer/i,
-        /playwright/i, /webdriver/i, /nightmare/i, /slimer/i
+    // Bot user agent patterns with confidence levels
+    const BOT_UA_PATTERNS = [
+        {
+            name: 'automation-framework',
+            pattern: /\b(?:headlesschrome|phantomjs|slimerjs|selenium|puppeteer|playwright|webdriver|nightmare|chrome-lighthouse|headless)\b/i,
+            confidence: 'high'
+        },
+        {
+            name: 'search-social-crawler',
+            pattern: /\b(?:googlebot|bingbot|duckduckbot|baiduspider|yandexbot|applebot|facebookexternalhit|facebot|twitterbot|linkedinbot|slurp|semrushbot|ahrefsbot|mj12bot|dotbot|petalbot|bytespider)\b/i,
+            confidence: 'high'
+        },
+        {
+            name: 'ai-crawler',
+            pattern: /\b(?:gptbot|chatgpt-user|oai-searchbot|ccbot|claudebot|anthropic-ai|perplexitybot|amazonbot|turnitin|screaming frog|siteauditbot)\b/i,
+            confidence: 'high'
+        },
+        {
+            name: 'http-client',
+            pattern: /\b(?:curl|wget|python-requests|python-urllib|httpx|aiohttp|go-http-client|okhttp|java\/)\b/i,
+            confidence: 'high'
+        },
+        {
+            name: 'scraper-tool',
+            pattern: /\b(?:scrapy|guzzlehttp|faraday|mechanize|libwww-perl|apache-httpclient|postmanruntime|insomnia|httpclient)\b/i,
+            confidence: 'high'
+        },
+        {
+            name: 'generic-bot-term',
+            pattern: /\b(?:crawler|spider|scraper)(?:\b|[_-])/i,
+            confidence: 'medium'
+        }
     ];
 
     // Headless default screen resolutions (only use resolutions that are headless-specific,
@@ -21,10 +48,24 @@
 
     /**
      * Check if user agent matches bot patterns
+     * Returns false if no match, or an object with match details if matched
      */
     function checkBotUserAgent() {
-        const ua = navigator.userAgent;
-        return BOT_PATTERNS.some(pattern => pattern.test(ua));
+        const ua = navigator.userAgent || '';
+
+        for (const rule of BOT_UA_PATTERNS) {
+            const match = ua.match(rule.pattern);
+            if (match) {
+                return {
+                    rule: rule.name,
+                    confidence: rule.confidence,
+                    match: match[0],
+                    description: `User-Agent matched ${rule.name}: ${match[0]} (${rule.confidence} confidence)`
+                };
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -153,6 +194,8 @@
 
     /**
      * Check client hints consistency
+     * Compares userAgentData values against navigator.userAgent (not navigator.platform,
+     * which can report Linux on Android browsers)
      */
     function checkInconsistentClientHints() {
         if (!navigator.userAgentData) {
@@ -173,13 +216,13 @@
             }
         }
 
-        // Check platform consistency (basic)
+        // Check platform consistency against userAgent (not navigator.platform)
+        // navigator.platform on Android Chrome reports Linux-like values, not "Android"
         const platform = hints.platform;
-        const uaPlatform = navigator.platform;
 
-        if (platform && uaPlatform) {
+        if (platform) {
             const platformMap = {
-                'Windows': /Win/,
+                'Windows': /Windows|Win/,
                 'macOS': /Mac/,
                 'Linux': /Linux/,
                 'Android': /Android/,
@@ -188,13 +231,18 @@
 
             let platformMatch = false;
             for (const [hintPlatform, uaPattern] of Object.entries(platformMap)) {
-                if (platform.includes(hintPlatform) && uaPattern.test(uaPlatform)) {
+                if (platform.includes(hintPlatform) && uaPattern.test(ua)) {
                     platformMatch = true;
                     break;
                 }
             }
 
-            if (!platformMatch && platform !== uaPlatform) {
+            // Special case: Android can show as Linux in some UAs, so both are acceptable
+            if (platform.includes('Android') && /Linux/.test(ua) && /Android/.test(ua)) {
+                platformMatch = true;
+            }
+
+            if (!platformMatch) {
                 inconsistencies.push('platformMismatch');
             }
         }
@@ -202,6 +250,7 @@
         if (inconsistencies.length > 0) {
             return {
                 inconsistencies,
+                hintPlatform: hints.platform,
                 description: `Client hints inconsistent: ${inconsistencies.join(', ')} - possible UA spoofing`
             };
         }
@@ -217,7 +266,9 @@
             const canvas = document.createElement('canvas');
             const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
 
-            if (!gl) return { reason: 'webglNotSupported', description: 'WebGL not supported - suspicious for modern browser' };
+            // WebGL not supported is a weak signal (privacy browsers, remote desktops,
+            // enterprise environments may disable it). Do not count as bot proof.
+            if (!gl) return false;
 
             const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
             if (!debugInfo) return false; // Cannot determine
@@ -263,7 +314,9 @@
             const canvas = document.createElement('canvas');
             const gl = canvas.getContext('webgl');
 
-            if (!gl) return { reason: 'webglNotSupported', description: 'WebGL not available - suspicious for modern browsers' };
+            // WebGL not available is a weak signal (privacy browsers, remote desktops,
+            // enterprise environments may disable it). Do not count as bot proof.
+            if (!gl) return false;
 
             const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
             const maxViewportDims = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
@@ -331,7 +384,9 @@
                 const OfflineAudioContext = window.OfflineAudioContext || window.webkitOfflineAudioContext;
 
                 if (!AudioContext || !OfflineAudioContext) {
-                    resolve({ reason: 'audioNotSupported', description: 'AudioContext not available' });
+                    // Audio not available is a weak signal (privacy browsers, remote desktops,
+                    // enterprise environments may disable it). Do not count as bot proof.
+                    resolve(false);
                     return;
                 }
 
@@ -438,7 +493,9 @@
             // Check if we got valid pixel data
             const data = canvas.toDataURL();
             if (!data || data.length < 100) {
-                return { reason: 'emptyCanvas', description: 'Canvas produced empty/invalid data' };
+                // Empty canvas is a weak signal (privacy browsers, remote desktops,
+                // enterprise environments may disable it). Do not count as bot proof.
+                return false;
             }
 
             return false;
