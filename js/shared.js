@@ -15,17 +15,17 @@
         },
         {
             name: 'search-social-crawler',
-            pattern: /\b(?:googlebot|bingbot|duckduckbot|baiduspider|yandexbot|applebot|facebookexternalhit|facebot|twitterbot|linkedinbot|slurp|semrushbot|ahrefsbot|mj12bot|dotbot|petalbot|bytespider|adsbot-google|mediapartners-google|google-inspectiontool|googleother|pinterestbot|discordbot|slackbot|telegrambot|redditbot|whatsapp|skypeuripreview)\b/i,
+            pattern: /\b(?:googlebot|bingbot|duckduckbot|baiduspider|yandexbot|applebot|facebookexternalhit|facebot|twitterbot|linkedinbot|slurp|semrushbot|ahrefsbot|mj12bot|dotbot|petalbot|bytespider|adsbot-google|mediapartners-google|google-inspectiontool|googleother|googleother-image|googleother-video|storebot-google|pinterestbot|discordbot|slackbot|telegrambot|redditbot|whatsapp|skypeuripreview)\b/i,
             confidence: 'high'
         },
         {
             name: 'ai-crawler',
-            pattern: /\b(?:gptbot|chatgpt-user|oai-searchbot|ccbot|claudebot|claude-user|claude-searchbot|anthropic-ai|perplexitybot|perplexity-user|amazonbot|turnitin|screaming frog|siteauditbot)\b/i,
+            pattern: /\b(?:gptbot|chatgpt-user|oai-searchbot|ccbot|claudebot|claude-user|claude-searchbot|anthropic-ai|perplexitybot|perplexity-user|amazonbot|meta-externalagent|facebookbot|google-extended|turnitin|screaming frog|siteauditbot)\b/i,
             confidence: 'high'
         },
         {
             name: 'http-client',
-            pattern: /\b(?:curl|wget|python-requests|python-urllib|httpx|aiohttp|go-http-client|okhttp|java\/|node-fetch|undici|axios|got|php-curl|ruby|restsharp|powershell|winhttp|libcurl)\b/i,
+            pattern: /\b(?:curl|wget|python-requests|python-urllib|python-httpx|httpx|aiohttp|go-http-client|okhttp|java\/|node-fetch|undici|axios|got|php-curl|ruby|restsharp|powershell|winhttp|libcurl|httpie|reqwest|hackney|fasthttp|apachebench|ab\/)\b/i,
             confidence: 'high'
         },
         {
@@ -458,6 +458,11 @@
             canvas.height = 200;
             const ctx = canvas.getContext('2d');
 
+            // If 2D context is unavailable, return false (not bot proof - just unsupported/restricted)
+            if (!ctx) {
+                return false;
+            }
+
             // Draw standard fingerprint content
             ctx.rect(0, 0, 10, 10);
             ctx.rect(2, 2, 6, 6);
@@ -613,6 +618,13 @@
     // Shared worker result promise — both checkInconsistentWorkerValues and
     // checkAutomatedWithCDPInWorker share a single worker run per page load.
     let _workerTestsPromise = null;
+
+    /**
+     * Reset the worker tests cache (useful after simulation mode changes)
+     */
+    function resetWorkerTestsCache() {
+        _workerTestsPromise = null;
+    }
 
     /**
      * Run Web Worker based tests (cached — runs at most once per page load)
@@ -1058,7 +1070,8 @@
         checkNavigatorIntegrity,
         createResultElement,
         showLoading,
-        runWorkerTests
+        runWorkerTests,
+        resetWorkerTestsCache
     };
 
 })();

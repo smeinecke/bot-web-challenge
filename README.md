@@ -31,7 +31,7 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 | `isWebGLInconsistent` | Detects SwiftShader/llvmpipe renderers |
 | `isAutomatedWithCDP` | Detects CDP automation markers |
 | `isAutomatedViaStackTrace` | Detects CDP via Error.prepareStackTrace |
-| `hasCanvasFingerprintIssue` | Validates canvas rendering |
+| `hasCanvasAvailabilityIssue` | Validates canvas API availability |
 | `hasAudioFingerprintIssue` | Detects headless audio output |
 | `hasInconsistentClientHints` | Checks User-Agent Data consistency |
 | `hasInconsistentGPUFeatures` | Detects software rendering |
@@ -40,6 +40,18 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 | `hasHighHardwareConcurrency` | Detects VM/cloud environments (>16 cores) |
 | `hasHeadlessChromeDefaultScreenResolution` | Detects headless resolutions |
 | `hasSuspiciousWeakSignals` | Collective weak signal analysis |
+
+> **Important Note on Weak Signals**
+>
+> Some checks are weak corroborating signals and may trigger in privacy-hardened, enterprise, remote desktop, VM, accessibility, or mobile environments. Do not treat a single weak signal as proof of automation. Weak signals include:
+> - `hasScreenAvailabilityAnomaly`
+> - `hasTouchInconsistency`
+> - `hasSuspiciousWeakSignals`
+> - `hasCanvasAvailabilityIssue`
+> - `hasAudioFingerprintIssue`
+> - `hasHighHardwareConcurrency`
+>
+> These should be interpreted as supporting evidence only when combined with stronger indicators like `navigator.webdriver`, known bot user agents, or CDP markers.
 
 ### Interaction Detection Tests
 

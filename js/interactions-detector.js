@@ -38,6 +38,7 @@
      */
     function startTracking() {
         resetTracking();
+        tracking.formStartTime = Date.now();
 
         if (_listenersAttached) return;
         _listenersAttached = true;
@@ -53,8 +54,6 @@
             form.addEventListener('focusin', onFormFocus, { passive: true });
             form.addEventListener('submit', onFormSubmit);
         }
-
-        tracking.formStartTime = Date.now();
     }
 
     /**
@@ -124,9 +123,35 @@
         }
         tracking.lastMousePos = pos;
 
-        // Collect CDP leak checks
+        // Collect CDP leak checks with structured results
         if (tracking.cdpLeakChecks.length < 100) {
-            tracking.cdpLeakChecks.push(screenMismatch);
+            const isFirefox = /firefox/i.test(navigator.userAgent);
+
+            if (!looksLikeCDP) {
+                tracking.cdpLeakChecks.push({ suspicious: false });
+            } else if (isFirefox) {
+                // Firefox/Linux can report screen coordinates equal to client coordinates in normal browsing
+                tracking.cdpLeakChecks.push({
+                    suspicious: false,
+                    reason: 'screen_equals_client_in_firefox',
+                    confidence: 'none',
+                    description: 'Firefox/Linux may report screen coordinates equal to client coordinates in normal browsing.'
+                });
+            } else if (!hasWindowOffset) {
+                tracking.cdpLeakChecks.push({
+                    suspicious: false,
+                    reason: 'no_window_offset',
+                    confidence: 'none',
+                    description: 'screenX/screenY equal client coordinates, but no reliable window offset exists.'
+                });
+            } else {
+                tracking.cdpLeakChecks.push({
+                    suspicious: true,
+                    reason: 'screen_equals_client_with_window_offset',
+                    confidence: 'medium',
+                    description: 'MouseEvent screen coordinates equal client coordinates despite non-zero window offset.'
+                });
+            }
         }
 
         tracking.lastActivityTime = now;
@@ -241,6 +266,7 @@
             isPlaywright: shared.checkPlaywright(),
             isSeleniumChromeDefault: shared.checkSeleniumChromeDefault(),
             isHeadlessChrome: shared.checkHeadlessChrome(),
+            isWebGLInconsistent: shared.checkWebGLInconsistent(),
             isAutomatedWithCDP: shared.checkAutomatedWithCDP(),
             hasInconsistentChromeObject: shared.checkInconsistentChrome(),
             isPhantom: shared.checkPhantomJS(),
@@ -254,7 +280,7 @@
             hasTouchInconsistency: shared.checkTouchInconsistency(),
             hasSuspiciousWeakSignals: shared.analyzeWeakSignals(),
             isAutomatedViaStackTrace: shared.checkCDPViaStackTrace(),
-            hasCanvasFingerprintIssue: shared.checkCanvasAvailability(),
+            hasCanvasAvailabilityIssue: shared.checkCanvasAvailability(),
 
             // Include static tests (async)
             hasInconsistentClientHints: shared.checkInconsistentClientHints(),
@@ -493,40 +519,38 @@
     /**
      * Analyze for CDP mouse leak
      * CDP-injected mouse events often have screenX === clientX (missing window position offset)
+     * Returns structured results with browser awareness
      */
     function analyzeCDPMouseLeak() {
         if (tracking.mouseEvents.length < 20) {
             return false; // Not enough data
         }
 
-        const windowScreenX = typeof window.screenX !== 'undefined' ? window.screenX : window.screenLeft || 0;
-        const windowScreenY = typeof window.screenY !== 'undefined' ? window.screenY : window.screenTop || 0;
+        // Count only suspicious CDP leak results (where suspicious === true)
+        const suspiciousChecks = tracking.cdpLeakChecks.filter(result => result && result.suspicious === true);
 
-        // Only meaningful check if window has position offset
-        const hasWindowOffset = windowScreenX !== 0 || windowScreenY !== 0;
-        if (!hasWindowOffset) {
+        if (suspiciousChecks.length === 0) {
             return false;
         }
 
-        // Check for CDP pattern: screenX === clientX (missing window offset)
-        const cdpPatternMatches = tracking.mouseEvents.filter(e => {
-            if (e.type !== 'move') return false;
-            // CDP bug: screenX === clientX instead of screenX === clientX + window.screenX
-            return Math.abs(e.screenX - e.x) < 5 && Math.abs(e.screenY - e.y) < 5;
-        }).length;
+        const totalChecks = tracking.cdpLeakChecks.length;
+        const ratio = suspiciousChecks.length / totalChecks;
 
-        const moveEvents = tracking.mouseEvents.filter(e => e.type === 'move').length;
-        const ratio = cdpPatternMatches / moveEvents;
+        // Get window position for context
+        const windowScreenX = typeof window.screenX !== 'undefined' ? window.screenX : window.screenLeft || 0;
+        const windowScreenY = typeof window.screenY !== 'undefined' ? window.screenY : window.screenTop || 0;
 
-        // If more than 80% of mouse events show the CDP pattern, flag it
-        if (ratio > 0.8 && moveEvents > 20) {
+        // If more than 80% of checks show the CDP pattern, flag it
+        if (ratio > 0.8 && totalChecks > 20) {
             return {
                 cdpPatternRatio: ratio.toFixed(2),
-                totalEvents: moveEvents,
-                cdpMatches: cdpPatternMatches,
+                totalEvents: tracking.mouseEvents.filter(e => e.type === 'move').length,
+                suspiciousChecks: suspiciousChecks.length,
+                totalChecks: totalChecks,
                 windowPosition: { x: windowScreenX, y: windowScreenY },
                 reason: 'cdpScreenOffsetBug',
-                description: `${(ratio * 100).toFixed(0)}% events show CDP screen coordinate bug (screenX === clientX)`
+                confidence: 'medium',
+                description: `${(ratio * 100).toFixed(0)}% events show CDP screen coordinate bug (screenX === clientX with window offset)`
             };
         }
 
@@ -595,7 +619,7 @@
             { label: 'hasNavigatorIntegrityViolation', value: results.hasNavigatorIntegrityViolation !== false, details: results.hasNavigatorIntegrityViolation },
             { label: 'hasSuspiciousWeakSignals', value: results.hasSuspiciousWeakSignals !== false, details: results.hasSuspiciousWeakSignals },
             { label: 'isAutomatedViaStackTrace', value: results.isAutomatedViaStackTrace && results.isAutomatedViaStackTrace.likelySource === 'automation', details: results.isAutomatedViaStackTrace, showLikelySource: true },
-            { label: 'hasCanvasFingerprintIssue', value: results.hasCanvasFingerprintIssue !== false, details: results.hasCanvasFingerprintIssue },
+            { label: 'hasCanvasAvailabilityIssue', value: results.hasCanvasAvailabilityIssue !== false, details: results.hasCanvasAvailabilityIssue },
             { label: 'hasAudioFingerprintIssue', value: results.hasAudioFingerprintIssue !== false, details: results.hasAudioFingerprintIssue },
         ];
 
@@ -668,7 +692,7 @@
             'isHeadlessChrome', 'isWebGLInconsistent', 'hasInconsistentWorkerValues',
             'hasInconsistentGPUFeatures', 'hasInconsistentClientHints',
             'isIframeOverridden', 'hasHeadlessChromeDefaultScreenResolution',
-            'hasSuspiciousWeakSignals', 'hasCanvasFingerprintIssue',
+            'hasSuspiciousWeakSignals', 'hasCanvasAvailabilityIssue',
             'hasAudioFingerprintIssue', 'hasMissingBrowserChrome',
             'hasScreenAvailabilityAnomaly', 'hasTouchInconsistency',
             'hasNavigatorIntegrityViolation', 'suspiciousClientSideBehavior',
