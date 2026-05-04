@@ -2,6 +2,7 @@
  * UI rendering helpers for detector results
  */
 import type { RawDetectorValue, UIStatus } from './detector-types';
+import { TEST_DESCRIPTIONS } from './test-descriptions';
 
 export interface ResultElementOptions {
   label: string;
@@ -9,6 +10,66 @@ export interface ResultElementOptions {
   isBoolean?: boolean;
   details?: unknown;
   showLikelySource?: boolean;
+}
+
+let modalContainer: HTMLElement | null = null;
+let modalTitle: HTMLElement | null = null;
+let modalBody: HTMLElement | null = null;
+
+function ensureModal(): HTMLElement {
+  if (modalContainer) return modalContainer;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'test-description-modal';
+
+  const dialog = document.createElement('div');
+  dialog.className = 'modal-dialog';
+
+  const header = document.createElement('div');
+  header.className = 'modal-header';
+
+  modalTitle = document.createElement('h3');
+  modalTitle.className = 'modal-title';
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'modal-close';
+  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.innerHTML = '&times;';
+  closeBtn.addEventListener('click', closeModal);
+
+  header.appendChild(modalTitle);
+  header.appendChild(closeBtn);
+
+  modalBody = document.createElement('div');
+  modalBody.className = 'modal-body';
+
+  dialog.appendChild(header);
+  dialog.appendChild(modalBody);
+  overlay.appendChild(dialog);
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeModal();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModal();
+  });
+
+  document.body.appendChild(overlay);
+  modalContainer = overlay;
+  return overlay;
+}
+
+function openModal(title: string, body: string): void {
+  const modal = ensureModal();
+  if (modalTitle) modalTitle.textContent = title;
+  if (modalBody) modalBody.textContent = body;
+  modal.classList.add('visible');
+}
+
+function closeModal(): void {
+  if (modalContainer) modalContainer.classList.remove('visible');
 }
 
 /**
@@ -34,9 +95,12 @@ export function createResultElement(
   const isInconclusive = !isBoolean && detailsObj && (detailsObj as Record<string, unknown>).inconclusive === true;
 
   // Special case: stack trace source — only fail when automation source is confirmed
-  const isStackTraceDevTools = showLikelySource && detailsObj && (detailsObj as Record<string, string>).likelySource === 'devtools';
+  const isStackTraceNonAutomation =
+    showLikelySource &&
+    detailsObj &&
+    (detailsObj as Record<string, unknown>).likelySource !== 'automation';
 
-  const isFailed = isStackTraceDevTools
+  const isFailed = isStackTraceNonAutomation
     ? false
     : (!isInconclusive && (isBoolean ? value === true : (value !== false && value !== null && value !== undefined)));
 
@@ -77,7 +141,22 @@ export function createResultElement(
   valueSpan.className = `value ${displayClass}`;
   valueSpan.textContent = displayLabel;
 
-  div.appendChild(labelSpan);
+  const helpBtn = document.createElement('button');
+  helpBtn.className = 'result-help-btn';
+  helpBtn.setAttribute('aria-label', `What is ${label}?`);
+  helpBtn.title = 'What does this test do?';
+  helpBtn.textContent = '?';
+  helpBtn.addEventListener('click', () => {
+    const description = TEST_DESCRIPTIONS[label] || 'No detailed description available for this test.';
+    openModal(label, description);
+  });
+
+  const labelWrap = document.createElement('span');
+  labelWrap.className = 'result-label-wrap';
+  labelWrap.appendChild(labelSpan);
+  labelWrap.appendChild(helpBtn);
+
+  div.appendChild(labelWrap);
   div.appendChild(valueSpan);
 
   // Add details tooltip for failed or inconclusive tests

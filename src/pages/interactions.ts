@@ -661,7 +661,15 @@ async function analyzeAndShowResults(): Promise<void> {
   }, 100);
 }
 
+let originalWebdriverDescriptor: PropertyDescriptor | undefined;
+let simulationActive = false;
+
 async function simulateBotMode(): Promise<void> {
+  if (!simulationActive) {
+    originalWebdriverDescriptor = Object.getOwnPropertyDescriptor(navigator, 'webdriver');
+    simulationActive = true;
+  }
+
   Object.defineProperty(navigator, 'webdriver', {
     get: () => true,
     configurable: true
@@ -715,6 +723,18 @@ async function simulateBotMode(): Promise<void> {
   analyzeAndShowResults();
 }
 
+function restoreBotMode(): void {
+  if (originalWebdriverDescriptor) {
+    Object.defineProperty(navigator, 'webdriver', originalWebdriverDescriptor);
+  } else {
+    delete ((navigator as unknown) as Record<string, unknown>).webdriver;
+  }
+
+  delete (window as Record<string, unknown>).$cdc_asdjflasutopfhvcZLmcfl_;
+  resetWorkerTestsCache();
+  simulationActive = false;
+}
+
 // Initialize when DOM is ready
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', startTracking);
@@ -728,6 +748,7 @@ if (document.readyState === 'loading') {
   if (checkbox?.checked) {
     simulateBotMode();
   } else {
+    restoreBotMode();
     resetTracking();
     const container = document.getElementById('interaction-results');
     if (container) container.innerHTML = '';

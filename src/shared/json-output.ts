@@ -2,8 +2,8 @@
  * JSON output generation module
  */
 import { BUILD_INFO } from './build-info';
+import type { DetectorResults, DetectorSummary, NormalizedTestResult } from './detector-types';
 import { summarizeResults } from './scoring';
-import type { DetectorResults } from './detector-types';
 
 export interface JSONOutput {
   detector: {
@@ -17,23 +17,8 @@ export interface JSONOutput {
   timestamp: string;
   userAgent: string;
   url: string;
-  tests: Record<string, {
-    status: string;
-    passed: boolean;
-    severity: string;
-    description?: string | null;
-    value: unknown;
-  }>;
-  summary: {
-    totalTests: number;
-    passed: number;
-    failed: number;
-    inconclusive: number;
-    score: number;
-    botDetected: boolean;
-    suspicious: boolean;
-    indicatorCount: number;
-  };
+  tests: Record<string, NormalizedTestResult>;
+  summary: DetectorSummary;
   trackingStats?: unknown;
 }
 
@@ -57,16 +42,7 @@ export function prepareJSONOutput(results: DetectorResults, trackingStats?: unkn
     userAgent: navigator.userAgent,
     url: window.location.href,
     tests,
-    summary: {
-      totalTests: summary.totalTests,
-      passed: summary.passed,
-      failed: summary.failed,
-      inconclusive: summary.inconclusive,
-      score: summary.score,
-      botDetected: summary.botDetected,
-      suspicious: summary.suspicious,
-      indicatorCount: summary.indicatorCount,
-    },
+    summary,
     ...(trackingStats !== undefined ? { trackingStats } : {}),
   };
 }

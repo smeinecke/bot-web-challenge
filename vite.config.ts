@@ -1,10 +1,10 @@
 import { defineConfig } from 'vite';
 import { execSync } from 'node:child_process';
-import { resolve } from 'path';
+import { fileURLToPath } from 'node:url';
 
 function safeExec(command: string): string {
   try {
-    return execSync(command).toString().trim();
+    return execSync(command, { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
   } catch {
     return 'unknown';
   }
@@ -18,9 +18,9 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        main: resolve(__dirname, 'index.html'),
-        static: resolve(__dirname, 'static.html'),
-        interactions: resolve(__dirname, 'interactions.html'),
+        main: fileURLToPath(new URL('./index.html', import.meta.url)),
+        static: fileURLToPath(new URL('./static.html', import.meta.url)),
+        interactions: fileURLToPath(new URL('./interactions.html', import.meta.url)),
       },
     },
   },

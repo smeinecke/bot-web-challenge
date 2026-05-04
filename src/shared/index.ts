@@ -8,3 +8,4 @@ export * from './json-output';
 export * from './ui-rendering';
 export * from './browser-checks';
 export * from './worker-checks';
+export * from './test-descriptions';
