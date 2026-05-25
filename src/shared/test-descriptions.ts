@@ -11,6 +11,9 @@ export const TEST_DESCRIPTIONS: Record<string, string> = {
   hasWebdriverTrue:
     'Checks whether navigator.webdriver is set to true. This property is automatically enabled by Chrome when controlled by automation tools (Selenium, Chromedriver, etc.). In a normal browser it should be undefined.',
 
+  hasWebdriverNull:
+    'Checks whether navigator.webdriver is null. In a real browser the property is either true (automation active) or undefined (absent). A null value — where typeof null === "object" — indicates a patched Chromium that changed the IDL type to nullable (boolean?) and returns C++ std::nullopt, a fingerprint unique to certain anti-detection builds.',
+
   hasWebdriverInFrameTrue:
     'Creates a hidden iframe and checks if navigator.webdriver is true inside it. Some anti-detection scripts only patch the main window, leaving the iframe untouched, so this test can catch evasion attempts.',
 

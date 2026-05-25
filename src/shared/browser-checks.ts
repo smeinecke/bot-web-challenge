@@ -65,6 +65,19 @@ export function checkWebdriver(): boolean {
   return navigator.webdriver === true;
 }
 
+/**
+ * Check whether navigator.webdriver is null instead of undefined.
+ *
+ * In a real Chrome browser navigator.webdriver is either `true` (automation
+ * active) or `undefined` (absent — property not exposed). It is never `null`.
+ * A patched Chromium build that changes the IDL type to `boolean?` and returns
+ * `std::nullopt` from C++ produces JavaScript `null` — typeof null === "object"
+ * is a well-known Cloudflare/Datadome bot signal.
+ */
+export function checkWebdriverNull(): boolean {
+  return navigator.webdriver === null;
+}
+
 /** Check for webdriver in iframe */
 export function checkWebdriverInFrame(): boolean {
   const iframe = document.createElement('iframe');
@@ -952,17 +965,26 @@ export function analyzeWeakSignals(): Record<string, unknown> | false {
     }
   }
 
+  // navigator.webdriver === null means typeof === "object" — never happens in a
+  // real browser; indicates a patched Chromium returning C++ std::nullopt via a
+  // nullable IDL type. Strong enough signal to report on its own.
+  if (navigator.webdriver === null) {
+    signals.push('webdriverIsNull');
+  }
+
   const nativeToString = Function.prototype.toString.call(Function.prototype.toString);
   if (nativeToString.indexOf('[native code]') === -1) {
     signals.push('toStringTampered');
   }
 
-  if (signals.length >= 2) {
+  // webdriverIsNull is strong enough to report alone; all others need 2+.
+  if (signals.includes('webdriverIsNull') || signals.length >= 2) {
     const descriptions: Record<string, string> = {
       'noDevicePixelRatio': 'Missing devicePixelRatio',
       'noVendor': 'Missing navigator.vendor',
       'fakeWebdriverFalse': 'navigator.webdriver set to false (should be undefined)',
-      'toStringTampered': 'Function.toString has been modified'
+      'webdriverIsNull': 'navigator.webdriver is null (typeof === "object") — should be undefined in a real browser',
+      'toStringTampered': 'Function.prototype.toString has been modified'
     };
 
     return {

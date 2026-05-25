@@ -4,6 +4,7 @@
 import {
   checkBotUserAgent,
   checkWebdriver,
+  checkWebdriverNull,
   checkWebdriverInFrame,
   checkPlaywright,
   checkInconsistentChrome,
@@ -85,6 +86,7 @@ async function runStaticDetection(): Promise<DetectorResults> {
   // Sync tests
   results.hasBotUserAgent = runTest('hasBotUserAgent', () => checkBotUserAgent());
   results.hasWebdriverTrue = runTest('hasWebdriverTrue', () => checkWebdriver());
+  results.hasWebdriverNull = runTest('hasWebdriverNull', () => checkWebdriverNull());
   results.hasWebdriverInFrameTrue = runTest('hasWebdriverInFrameTrue', () => checkWebdriverInFrame());
   results.isPlaywright = runTest('isPlaywright', () => checkPlaywright());
   results.hasInconsistentChromeObject = runTest('hasInconsistentChromeObject', () => checkInconsistentChrome());
