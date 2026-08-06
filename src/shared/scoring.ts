@@ -1,245 +1,381 @@
 /**
- * Centralized scoring module for detector results
+ * Centralized evidence-fusion scoring module for detector results.
+ *
+ * The scoring engine consumes normalized `DetectionResult[]` values. It
+ * deduplicates artifacts by identity, evaluates categories independently,
+ * applies cross-context corroboration, and produces a verdict and summary.
  */
 import type {
-  DetectorResults,
-  ScoringResult,
+  DetectionCategory,
+  DetectionContext,
+  DetectionResult,
   DetectionSeverity,
-  RawDetectorValue,
+  DetectorResults,
+  DetectorSummary,
+  NormalizedTestResult,
+  ScoringResult,
 } from './detector-types';
 
-// Severity weights for scoring
+// Severity point values for display score only. Verdict is rule-based.
 const SEVERITY_SCORE: Record<DetectionSeverity, number> = {
   info: 0,
   weak: 0.5,
-  medium: 1,
-  strong: 2,
+  medium: 2,
+  strong: 4,
+  hard: 8,
 };
 
-// Thresholds
-const BOT_DETECTED_THRESHOLD = 2;
-const SUSPICIOUS_THRESHOLD = 0.5;
+const CROSS_CONTEXT_BONUS_PER_EXTRA = 0.25;
+const CROSS_CONTEXT_BONUS_MAX = 1.0;
+
+// Verdict rule helpers
+const DIRECT_AUTOMATION_CATEGORIES: DetectionCategory[] = ['webdriver', 'cdp', 'automation-global'];
+
+function isDirectAutomationCategory(category: DetectionCategory): boolean {
+  return DIRECT_AUTOMATION_CATEGORIES.includes(category);
+}
+
+function severityRank(severity: DetectionSeverity): number {
+  const rank: Record<DetectionSeverity, number> = {
+    info: 0,
+    weak: 1,
+    medium: 2,
+    strong: 3,
+    hard: 4,
+  };
+  return rank[severity];
+}
 
 /**
- * Extract severity from a raw detector value
- * Respects explicit severity/weak flags in result objects
+ * Deduplicate findings into unique scored artifacts.
+ *
+ * Artifact identity is `artifactId + ':' + context`. If the same artifact is
+ * reported by several detectors, keep the most severe, clearest finding. The
+ * raw observations are still preserved in the per-detector raw map.
  */
-function getSeverity(
-  _name: string,
-  value: RawDetectorValue,
-  defaultSeverity: DetectionSeverity = 'medium'
-): { severity: DetectionSeverity; weight: number } {
-  // If value is an object, check for explicit severity/weak flags
-  if (value && typeof value === 'object') {
-    const sev = value.severity as unknown;
-    if (typeof sev === 'string' && sev in SEVERITY_SCORE) {
-      const typedSev = sev as DetectionSeverity;
-      return { severity: typedSev, weight: SEVERITY_SCORE[typedSev] };
-    }
-    if (value.weak === true) {
-      return { severity: 'weak', weight: 0.5 };
+function deduplicateArtifacts(findings: DetectionResult[]): DetectionResult[] {
+  const byKey = new Map<string, DetectionResult>();
+
+  for (const f of findings) {
+    if (f.status === 'passed') continue;
+    const key = `${f.artifactId}:${f.context}`;
+    const existing = byKey.get(key);
+    if (!existing || severityRank(f.severity) > severityRank(existing.severity)) {
+      byKey.set(key, f);
     }
   }
 
-  // Fallback to default
-  return { severity: defaultSeverity, weight: SEVERITY_SCORE[defaultSeverity] };
+  return Array.from(byKey.values());
 }
 
 /**
- * Determine if a result is inconclusive
+ * Compute a cross-context corroboration bonus: when the same artifactId is
+ * observed in multiple independent contexts, a small score bonus is added,
+ * capped so it cannot produce a bot verdict by itself.
  */
-function isInconclusive(value: RawDetectorValue): boolean {
-  return value !== false && value !== null && value !== undefined &&
-    typeof value === 'object' && value.inconclusive === true;
-}
-
-/**
- * Determine if a result is a failure
- * Inconclusive is NOT a failure
- */
-function isFailed(value: RawDetectorValue): boolean {
-  if (value === false || value === null || value === undefined) return false;
-  if (isInconclusive(value)) return false;
-  return true;
-}
-
-/**
- * Summarize detection results with proper scoring
- * Fixes issues:
- * - Inconclusive results don't count as failures
- * - Object-valued results are scored based on their severity/weak flags
- * - Proper indicator counting
- */
-export function summarizeResults(results: DetectorResults): ScoringResult {
-  const tests: ScoringResult['tests'] = {};
-  let totalTests = 0;
-  let passed = 0;
-  let failed = 0;
-  let inconclusiveCount = 0;
-  let weakFindings = 0;
-  let mediumFindings = 0;
-  let strongFindings = 0;
-  let score = 0;
-  const indicatorDetails: Array<{ test: string; description: string; severity: string }> = [];
-
-  function countIndicator(name: string, description: string, severity: DetectionSeverity, weight: number) {
-    score += weight;
-    indicatorDetails.push({ test: name, description, severity });
+function crossContextBonus(scoredArtifacts: DetectionResult[]): number {
+  const contextsByArtifact = new Map<string, Set<DetectionContext>>();
+  for (const a of scoredArtifacts) {
+    if (a.severity === 'info') continue;
+    const set = contextsByArtifact.get(a.artifactId) ?? new Set<DetectionContext>();
+    set.add(a.context);
+    contextsByArtifact.set(a.artifactId, set);
   }
 
-  // Process each test result
-  for (const [name, value] of Object.entries(results)) {
-    // Skip internal/debug keys
-    if (name.startsWith('_')) continue;
+  let bonus = 0;
+  for (const contexts of contextsByArtifact.values()) {
+    const extra = Math.max(0, contexts.size - 1);
+    bonus += Math.min(extra * CROSS_CONTEXT_BONUS_PER_EXTRA, CROSS_CONTEXT_BONUS_MAX);
+  }
+  return bonus;
+}
 
-    const testInconclusive = isInconclusive(value);
-    const testFailed = isFailed(value);
-    const testPassed = !testFailed && !testInconclusive;
+interface CategoryEvidence {
+  category: DetectionCategory;
+  maxSeverity: DetectionSeverity;
+  count: number;
+}
 
-    // Determine severity from value or use defaults based on test name patterns
-    let defaultSeverity: DetectionSeverity = 'medium';
-    if (/^(hasBotUserAgent|isPlaywright|isPhantom|isNightmare|isSequentum|isSeleniumChromeDefault|hasWebdriverTrue|hasWebdriverInFrameTrue|isAutomatedWithCDP|isIframeOverridden|hasMissingBrowserChrome|hasAutomationGlobalsExtended|hasBlobIframeCDPIssue|isHeadlessChrome)$/.test(name)) {
-      defaultSeverity = 'strong';
-    } else if (/^(hasInconsistentClientHints|hasWebGLInconsistent|hasCDPMouseLeak|hasInconsistentGPUFeatures|hasHeadlessChromeDefaultScreenResolution|hasNavigatorIntegrityViolation|isAutomatedWithCDPInWebWorker|isAutomatedViaStackTrace|hasInconsistentChromeObject)$/.test(name)) {
-      defaultSeverity = 'medium';
-    } else if (/^(hasSuspiciousWeakSignals|hasCanvasAvailabilityIssue|hasAudioFingerprintIssue|hasScreenAvailabilityAnomaly|hasTouchInconsistency|hasPermissionsInconsistency|hasPluginsMimeTypesIssue|hasLocaleTimezoneIntlIssue|hasViewportScreenCoherenceIssue|hasHighHardwareConcurrency|suspiciousClientSideBehavior|superHumanSpeed|hasAdvancedBotSignals)$/.test(name)) {
-      defaultSeverity = 'weak';
+function collectCategoryEvidence(scoredArtifacts: DetectionResult[]): CategoryEvidence[] {
+  const byCategory = new Map<DetectionCategory, CategoryEvidence>();
+
+  for (const a of scoredArtifacts) {
+    if (a.status !== 'finding') continue;
+    if (a.severity === 'info') continue;
+
+    let ev = byCategory.get(a.category);
+    if (!ev) {
+      ev = { category: a.category, maxSeverity: a.severity, count: 0 };
+      byCategory.set(a.category, ev);
     }
-
-    // Special case: stack trace detection - only count if likelySource is 'automation'
-    if (name === 'isAutomatedViaStackTrace') {
-      const obj = value && typeof value === 'object' ? value as Record<string, unknown> : null;
-      const isAutomation = obj?.likelySource === 'automation';
-      const severity: DetectionSeverity = isAutomation ? 'strong' : 'info';
-      const weight = isAutomation ? 2 : 0;
-      const desc = obj?.description as string | undefined;
-
-      tests[name] = {
-        status: isAutomation ? 'failed' : 'passed',
-        passed: !isAutomation,
-        severity,
-        value,
-        description: desc ?? null,
-      };
-
-      totalTests++;
-      if (isAutomation) {
-        failed++;
-        strongFindings++;
-        countIndicator(name, desc ?? 'Automation detected via stack trace', 'strong', weight);
-      } else {
-        passed++;
-      }
-      continue;
+    ev.count++;
+    if (severityRank(a.severity) > severityRank(ev.maxSeverity)) {
+      ev.maxSeverity = a.severity;
     }
+  }
 
-    // Worker values: inconclusive results should be weak, not failures
-    if (name === 'hasInconsistentWorkerValues' && testInconclusive) {
-      tests[name] = {
-        status: 'inconclusive',
-        passed: false,
-        inconclusive: true,
-        severity: 'weak',
-        value,
-        description: (value && typeof value === 'object' && value.description) ? value.description : 'Worker test inconclusive',
-      };
-      totalTests++;
-      inconclusiveCount++;
-      // Inconclusive doesn't add to score
-      continue;
-    }
+  return Array.from(byCategory.values()).sort((a, b) =>
+    severityRank(b.maxSeverity) - severityRank(a.maxSeverity)
+  );
+}
 
-    // Special case: Chrome object inconsistency - can be weak or medium depending on reason
-    if (name === 'hasInconsistentChromeObject' && testFailed && value && typeof value === 'object') {
-      // chromeMissing is stronger (missing window.chrome on Chromium)
-      // chromeShallow is weaker (has chrome but no expected subobjects)
-      const specificSeverity: DetectionSeverity = value.reason === 'chromeMissing' ? 'medium' : 'weak';
-      const weight = value.reason === 'chromeMissing' ? 1 : 0.5;
+export interface VerdictDecision {
+  verdict: 'human' | 'suspicious' | 'bot' | 'unknown';
+  rule: string;
+  score: number;
+}
 
-      tests[name] = {
-        status: 'failed',
-        passed: false,
-        severity: specificSeverity,
-        countsAsIndicator: true,
-        value,
-        description: value.description ?? null,
-      };
-
-      totalTests++;
-      failed++;
-      if (specificSeverity === 'weak') weakFindings++;
-      else if (specificSeverity === 'medium') mediumFindings++;
-      else if (specificSeverity === 'strong') strongFindings++;
-      countIndicator(name, value.description ?? 'Chrome object inconsistent', specificSeverity, weight);
-      continue;
-    }
-
-    const { severity, weight } = getSeverity(name, value, defaultSeverity);
-
-    // Only count as indicator if it has significant weight and is failed
-    const countsAsIndicator = testFailed && weight >= 0.5;
-
-    tests[name] = {
-      status: testInconclusive ? 'inconclusive' : testFailed ? 'failed' : 'passed',
-      passed: testPassed,
-      inconclusive: testInconclusive || undefined,
-      severity,
-      countsAsIndicator,
-      value,
-      description: (testFailed || testInconclusive) && value && typeof value === 'object' && value.description
-        ? value.description
-        : null,
+function decideVerdict(
+  scoredArtifacts: DetectionResult[],
+  allFindings: DetectionResult[],
+  categoryEvidence: CategoryEvidence[]
+): VerdictDecision {
+  const hard = scoredArtifacts.filter(a => a.severity === 'hard');
+  const strongAutomation = scoredArtifacts.filter(
+    a => a.severity === 'strong' && isDirectAutomationCategory(a.category)
+  );
+  // 1. Hard evidence is conclusive.
+  if (hard.length > 0) {
+    const artifact = hard[0];
+    return {
+      verdict: 'bot',
+      rule: `hard:${artifact.category}:${artifact.artifactId}`,
+      score: SEVERITY_SCORE.hard,
     };
+  }
 
-    totalTests++;
-    if (testInconclusive) {
-      inconclusiveCount++;
-    } else if (testFailed) {
-      failed++;
-      if (severity === 'weak') weakFindings++;
-      else if (severity === 'medium') mediumFindings++;
-      else if (severity === 'strong') strongFindings++;
-      if (countsAsIndicator) {
-        const desc = value && typeof value === 'object' && value.description
-          ? value.description
-          : 'Detected';
-        countIndicator(name, desc, severity, weight);
-      }
-    } else {
-      passed++;
+  // 2. Strong direct automation evidence is sufficient on its own.
+  if (strongAutomation.length > 0) {
+    const artifact = strongAutomation[0];
+    return {
+      verdict: 'bot',
+      rule: `strong-direct:${artifact.category}:${artifact.artifactId}`,
+      score: SEVERITY_SCORE.strong,
+    };
+  }
+
+  const mediumPlusCategories = categoryEvidence.filter(
+    e => e.maxSeverity === 'medium' || e.maxSeverity === 'strong' || e.maxSeverity === 'hard'
+  );
+  const mediumCategories = categoryEvidence.filter(e => e.maxSeverity === 'medium');
+  const weakCategories = categoryEvidence.filter(e => e.maxSeverity === 'weak');
+
+  // 3. Two independent medium-or-strong categories.
+  if (mediumPlusCategories.length >= 2) {
+    return {
+      verdict: 'bot',
+      rule: `two-independent-medium-categories:${mediumPlusCategories.map(c => c.category).join(',')}`,
+      score: 4,
+    };
+  }
+
+  // 4. One medium category plus at least two weak findings from independent
+  //    categories (and those weak categories must not be the medium category).
+  if (mediumCategories.length === 1) {
+    const mediumCat = mediumCategories[0].category;
+    const independentWeak = weakCategories.filter(w => w.category !== mediumCat);
+    if (independentWeak.length >= 2) {
+      return {
+        verdict: 'bot',
+        rule: `medium-plus-weak:${mediumCat}+${independentWeak.map(w => w.category).join(',')}`,
+        score: 3,
+      };
     }
   }
 
-  const indicatorCount = indicatorDetails.length;
-  const botDetected = score >= BOT_DETECTED_THRESHOLD;
-  const suspicious = score >= SUSPICIOUS_THRESHOLD && score < BOT_DETECTED_THRESHOLD;
+  // 5. Weak findings from several independent categories corroborate.
+  if (weakCategories.length >= 3) {
+    return {
+      verdict: 'bot',
+      rule: `weak-corroboration:${weakCategories.map(w => w.category).join(',')}`,
+      score: 2,
+    };
+  }
 
-  const summary = {
-    totalTests,
-    passed,
-    failed,
+  // Compute display score before deciding suspicious/unknown/human.
+  const displayScore = Math.round(
+    (scoredArtifacts
+      .filter(a => a.status === 'finding' && a.severity !== 'info')
+      .reduce((sum, a) => sum + SEVERITY_SCORE[a.severity], 0) +
+      crossContextBonus(scoredArtifacts)) *
+      10
+  ) / 10;
+
+  // 6. Suspicious: at least one independent finding but not enough for bot.
+  if (mediumPlusCategories.length === 1 || weakCategories.length >= 1 || displayScore >= 0.5) {
+    return {
+      verdict: 'suspicious',
+      rule: `single-category-suspicious:${categoryEvidence.map(c => c.category).join(',') || 'none'}`,
+      score: displayScore,
+    };
+  }
+
+  // 7. Unknown / reduced detection coverage when critical checks are inconclusive.
+  const criticalInconclusive = allFindings.filter(
+    f => f.critical && f.status === 'inconclusive'
+  ).length;
+  if (criticalInconclusive > 0) {
+    return {
+      verdict: 'unknown',
+      rule: 'critical-inconclusive',
+      score: 0,
+    };
+  }
+
+  // 8. No evidence of automation.
+  return {
+    verdict: 'human',
+    rule: 'no-automation-evidence',
+    score: 0,
+  };
+}
+
+/**
+ * Build per-detector test view from the raw map and the flat findings list.
+ */
+function buildTests(
+  rawResults: DetectorResults,
+  findings: DetectionResult[]
+): Record<string, NormalizedTestResult> {
+  const byDetector = new Map<string, DetectionResult[]>();
+  for (const f of findings) {
+    const id = f.detectorId ?? 'unknown';
+    const list = byDetector.get(id) ?? [];
+    list.push(f);
+    byDetector.set(id, list);
+  }
+
+  const tests: Record<string, NormalizedTestResult> = {};
+  for (const [detectorId, raw] of Object.entries(rawResults)) {
+    const detectorFindings = byDetector.get(detectorId) ?? [];
+    const finding = detectorFindings.find(f => f.status === 'finding') ??
+      detectorFindings.find(f => f.status === 'inconclusive') ??
+      detectorFindings[0];
+
+    const status = finding?.status ?? 'passed';
+    const passed = status === 'passed';
+
+    // Use the most severe result for the per-detector display; if all passed,
+    // the helper status is 'info'.
+    let severity: DetectionSeverity = finding?.severity ?? 'info';
+    if (status === 'passed') severity = 'info';
+
+    const scoreContribution = detectorFindings
+      .filter(f => f.status === 'finding' && f.severity !== 'info')
+      .reduce((sum, f) => sum + SEVERITY_SCORE[f.severity], 0);
+
+    tests[detectorId] = {
+      status,
+      passed,
+      severity,
+      category: finding?.category,
+      artifactId: finding?.artifactId,
+      context: finding?.context,
+      countsAsIndicator: status === 'finding' && severity !== 'info',
+      scoreContribution,
+      value: raw,
+      description: (finding?.description) ?? null,
+      findings: detectorFindings,
+    };
+  }
+
+  return tests;
+}
+
+/**
+ * Summarize normalized detection results into a scoring result.
+ *
+ * `rawResults` preserves the legacy per-detector map for JSON/debug output.
+ * `findings` is the flat list of structured results emitted by the runner.
+ */
+export function summarizeResults(
+  rawResults: DetectorResults,
+  findings: DetectionResult[]
+): ScoringResult {
+  const scoredArtifacts = deduplicateArtifacts(findings);
+  const categoryEvidence = collectCategoryEvidence(scoredArtifacts);
+
+  const { verdict, rule, score } = decideVerdict(scoredArtifacts, findings, categoryEvidence);
+
+  const counts = {
+    info: 0,
+    weak: 0,
+    medium: 0,
+    strong: 0,
+    hard: 0,
+  };
+  let passedCount = 0;
+  let findingCount = 0;
+  let inconclusiveCount = 0;
+
+  for (const f of findings) {
+    if (f.status === 'passed') {
+      passedCount++;
+      counts.info++;
+    } else if (f.status === 'inconclusive') {
+      inconclusiveCount++;
+      counts.info++;
+    } else {
+      findingCount++;
+      counts[f.severity]++;
+    }
+  }
+
+  const criticalResults = findings.filter(f => f.critical);
+  const criticalTotal = criticalResults.length;
+  const criticalInconclusive = criticalResults.filter(f => f.status === 'inconclusive').length;
+  const criticalCompleted = criticalTotal - criticalInconclusive;
+  const coverage = criticalTotal > 0 ? criticalCompleted / criticalTotal : 1;
+
+  const uniqueEvidenceCount = scoredArtifacts.filter(
+    a => a.status === 'finding' && a.severity !== 'info'
+  ).length;
+  const independentCategoryCount = categoryEvidence.length;
+
+  const summary: DetectorSummary = {
+    totalTests: Object.keys(rawResults).length,
+    passed: passedCount,
+    finding: findingCount,
     inconclusive: inconclusiveCount,
-    weakFindings,
-    mediumFindings,
-    strongFindings,
-    score: Math.round(score * 10) / 10,
-    botDetected,
-    suspicious,
-    indicatorCount,
+    infoFindings: counts.info,
+    weakFindings: counts.weak,
+    mediumFindings: counts.medium,
+    strongFindings: counts.strong,
+    hardFindings: counts.hard,
+    score,
+    verdict,
+    botDetected: verdict === 'bot',
+    suspicious: verdict === 'suspicious',
+    coverage: Math.round(coverage * 100),
+    criticalChecksTotal: criticalTotal,
+    criticalChecksCompleted: criticalCompleted,
+    criticalChecksInconclusive: criticalInconclusive,
+    uniqueEvidenceCount,
+    independentCategoryCount,
+    verdictRule: rule,
   };
 
   let statusClass: string;
   let statusText: string;
-  if (botDetected) {
+  if (verdict === 'bot') {
     statusClass = 'bot';
-    statusText = `BOT DETECTED (score: ${summary.score})`;
-  } else if (suspicious) {
+    statusText = `BOT DETECTED (score: ${score})`;
+  } else if (verdict === 'suspicious') {
     statusClass = 'pending';
-    statusText = `SUSPICIOUS (score: ${summary.score})`;
+    statusText = `SUSPICIOUS (score: ${score})`;
+  } else if (verdict === 'unknown') {
+    statusClass = 'pending';
+    statusText = `UNKNOWN / REDUCED COVERAGE (score: ${score})`;
   } else {
     statusClass = 'human';
-    statusText = 'HUMAN';
+    statusText = 'NO AUTOMATION DETECTED';
   }
 
-  return { tests, summary, uiStatus: { statusClass, statusText } };
+  return {
+    tests: buildTests(rawResults, findings),
+    findings,
+    scoredArtifacts,
+    summary,
+    uiStatus: { statusClass, statusText },
+  };
 }

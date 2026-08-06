@@ -1,0 +1,143 @@
+import { describe, it, expect } from 'vitest';
+import { summarizeResults } from './scoring';
+import { finding, inconclusive, pass, type DetectionResult } from './detector-types';
+
+const rawBase = { _debug: { testCount: 0 } };
+
+function f(result: DetectionResult): DetectionResult {
+  return { ...result, detectorId: result.detectorId ?? 'test' };
+}
+
+describe('evidence-fusion scoring', () => {
+  it('navigator.webdriver === true produces a bot verdict', () => {
+    const findings = [f(finding('hard', 'webdriver', 'webdriver:true', 'main', 'webdriver-true', 'navigator.webdriver === true'))];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.verdict).toBe('bot');
+    expect(scoring.summary.verdictRule).toContain('hard');
+  });
+
+  it('navigator.webdriver === null produces a bot verdict', () => {
+    const findings = [f(finding('hard', 'webdriver', 'webdriver:null', 'main', 'webdriver-is-null', 'navigator.webdriver is null'))];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.verdict).toBe('bot');
+    expect(scoring.summary.uniqueEvidenceCount).toBe(1);
+  });
+
+  it('the null artifact reported by two detectors is scored once', () => {
+    const findings = [
+      f({ ...finding('hard', 'webdriver', 'webdriver:null', 'main', 'webdriver-is-null', 'null from hasWebdriverNull'), detectorId: 'hasWebdriverNull' }),
+      f({ ...finding('hard', 'webdriver', 'webdriver:null', 'main', 'webdriver-is-null', 'null from hasSuspiciousWeakSignals'), detectorId: 'hasSuspiciousWeakSignals' }),
+    ];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.verdict).toBe('bot');
+    expect(scoring.summary.uniqueEvidenceCount).toBe(1);
+    expect(scoring.findings.length).toBe(2);
+    expect(scoring.scoredArtifacts.length).toBe(1);
+  });
+
+  it('a known Selenium/CDP marker remains sufficient for bot detection', () => {
+    const findings = [f(finding('strong', 'cdp', 'cdp:selenium-default', 'main', 'selenium-default', 'Selenium CDC marker'))];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.verdict).toBe('bot');
+    expect(scoring.summary.verdictRule).toContain('strong-direct');
+  });
+
+  it('duplicate reporting of the same marker does not inflate independent evidence count', () => {
+    const findings = [
+      f({ ...finding('strong', 'cdp', 'cdp:selenium-default', 'main', 'selenium-default', 'Selenium default marker 1'), detectorId: 'isSeleniumChromeDefault' }),
+      f({ ...finding('strong', 'cdp', 'cdp:selenium-default', 'main', 'selenium-default', 'Selenium default marker 2'), detectorId: 'isAutomatedWithCDP' }),
+    ];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.uniqueEvidenceCount).toBe(1);
+    expect(scoring.summary.independentCategoryCount).toBe(1);
+    expect(scoring.summary.verdict).toBe('bot');
+  });
+
+  it('a detector exception is inconclusive, not passed', () => {
+    const findings = [
+      f(inconclusive('webdriver', 'webdriver:true', 'main', 'detector-exception', 'webdriver check threw'))
+    ];
+    const raw = { test: { inconclusive: true, reason: 'exception', description: 'webdriver check threw' } };
+    const scoring = summarizeResults(raw, findings);
+    expect(scoring.tests.test.status).toBe('inconclusive');
+    expect(scoring.tests.test.passed).toBe(false);
+  });
+
+  it('critical inconclusive checks prevent a clean human verdict', () => {
+    const findings = [
+      f({ ...inconclusive('webdriver', 'webdriver:true', 'main', 'detector-exception', 'Critical check failed'), critical: true }),
+    ];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.verdict).toBe('unknown');
+    expect(scoring.summary.verdictRule).toBe('critical-inconclusive');
+  });
+
+  it('two weak findings from the same category do not produce a bot verdict', () => {
+    const findings = [
+      f(finding('weak', 'browser-integrity', 'browser-integrity:a', 'main', 'weak-a', 'Weak A')),
+      f(finding('weak', 'browser-integrity', 'browser-integrity:b', 'main', 'weak-b', 'Weak B')),
+    ];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.verdict).not.toBe('bot');
+    expect(scoring.summary.independentCategoryCount).toBe(1);
+  });
+
+  it('weak findings from several independent categories can corroborate into a bot verdict', () => {
+    const findings = [
+      f(finding('weak', 'browser-integrity', 'weak:1', 'main', 'integrity', 'Weak integrity')),
+      f(finding('weak', 'environment', 'weak:2', 'main', 'environment', 'Weak environment')),
+      f(finding('weak', 'fingerprint', 'weak:3', 'main', 'fingerprint', 'Weak fingerprint')),
+    ];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.verdict).toBe('bot');
+    expect(scoring.summary.verdictRule).toContain('weak-corroboration');
+  });
+
+  it('outer === inner is retained as weak evidence and cannot detect a bot alone', () => {
+    const findings = [f(finding('weak', 'environment', 'browser-chrome:outer-eq-inner', 'main', 'outer-eq-inner', 'outer === inner'))];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.verdict).toBe('suspicious');
+    expect(scoring.summary.uniqueEvidenceCount).toBe(1);
+  });
+
+  it('outer < inner remains strong', () => {
+    const findings = [f(finding('strong', 'environment', 'browser-chrome:outer-lt-inner', 'main', 'outer-lt-inner', 'outer < inner'))];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.findings[0].severity).toBe('strong');
+    expect(scoring.scoredArtifacts[0].severity).toBe('strong');
+  });
+
+  it('two independent medium-or-strong categories produce a bot verdict', () => {
+    const findings = [
+      f(finding('medium', 'cdp', 'cdp:leak', 'main', 'cdp-leak', 'CDP leak')),
+      f(finding('medium', 'browser-integrity', 'browser-integrity:prepare-stack-trace', 'main', 'non-native-handler', 'Non-native handler')),
+    ];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.verdict).toBe('bot');
+    expect(scoring.summary.verdictRule).toContain('two-independent-medium-categories');
+  });
+
+  it('one medium plus multiple independent weak findings produces a bot verdict', () => {
+    const findings = [
+      f(finding('medium', 'cdp', 'cdp:leak', 'main', 'cdp-leak', 'CDP leak')),
+      f(finding('weak', 'environment', 'browser-chrome:outer-eq-inner', 'main', 'outer-eq-inner', 'outer === inner')),
+      f(finding('weak', 'browser-integrity', 'plugins:anomaly', 'main', 'plugins-anomaly', 'Plugins anomaly')),
+    ];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.verdict).toBe('bot');
+    expect(scoring.summary.verdictRule).toContain('medium-plus-weak');
+  });
+
+  it('passes and inconclusive results are tracked in coverage summary', () => {
+    const findings = [
+      f(pass('webdriver', 'webdriver:true', 'main', 'no-finding', 'No webdriver')),
+      f({ ...inconclusive('worker', 'worker:integrity', 'worker', 'worker-timeout', 'Worker timeout'), critical: true }),
+      f(finding('weak', 'environment', 'hardware:high-concurrency', 'main', 'high-cores', 'High core count')),
+    ];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.criticalChecksTotal).toBe(1);
+    expect(scoring.summary.criticalChecksInconclusive).toBe(1);
+    expect(scoring.summary.coverage).toBe(0);
+    expect(scoring.summary.verdict).toBe('suspicious');
+  });
+});

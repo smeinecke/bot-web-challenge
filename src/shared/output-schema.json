@@ -1,0 +1,132 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Bot Web Challenge Detector Output",
+  "description": "Structured bot detection output from the bot-web-challenge detector.",
+  "type": "object",
+  "required": ["detector", "timestamp", "userAgent", "url", "tests", "findings", "scoredArtifacts", "summary"],
+  "properties": {
+    "detector": {
+      "type": "object",
+      "required": ["name", "version", "schemaVersion", "buildTime", "gitCommit", "gitBranch"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" },
+        "schemaVersion": { "type": "integer", "minimum": 2 },
+        "buildTime": { "type": "string", "format": "date-time" },
+        "gitCommit": { "type": "string" },
+        "gitBranch": { "type": "string" }
+      }
+    },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "userAgent": { "type": "string" },
+    "url": { "type": "string", "format": "uri" },
+    "tests": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/normalizedTestResult"
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/detectionResult" }
+    },
+    "scoredArtifacts": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/scoredArtifact" }
+    },
+    "trackingStats": { "type": ["object", "null"] },
+    "summary": { "$ref": "#/definitions/summary" }
+  },
+  "definitions": {
+    "detectionResult": {
+      "type": "object",
+      "required": ["status", "severity", "category", "artifactId", "context", "reason", "description"],
+      "properties": {
+        "status": { "type": "string", "enum": ["passed", "finding", "inconclusive"] },
+        "severity": { "type": "string", "enum": ["info", "weak", "medium", "strong", "hard"] },
+        "category": { "type": "string" },
+        "artifactId": { "type": "string" },
+        "context": { "type": "string", "enum": ["main", "iframe", "worker", "blob-iframe", "interaction"] },
+        "reason": { "type": "string" },
+        "description": { "type": "string" },
+        "confidence": { "type": "number" },
+        "evidence": { "type": "object" },
+        "detectorId": { "type": "string" },
+        "critical": { "type": "boolean" },
+        "raw": {}
+      }
+    },
+    "normalizedTestResult": {
+      "type": "object",
+      "required": ["status", "passed", "severity", "category", "artifactId", "context", "countsAsIndicator", "scoreContribution", "value", "description"],
+      "properties": {
+        "status": { "type": "string", "enum": ["passed", "finding", "inconclusive"] },
+        "passed": { "type": "boolean" },
+        "severity": { "type": "string", "enum": ["none", "info", "weak", "medium", "strong", "hard"] },
+        "category": { "type": "string" },
+        "artifactId": { "type": "string" },
+        "context": { "type": "string" },
+        "countsAsIndicator": { "type": "boolean" },
+        "scoreContribution": { "type": "number" },
+        "value": {},
+        "description": { "type": ["string", "null"] },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/detectionResult" }
+        }
+      }
+    },
+    "scoredArtifact": {
+      "type": "object",
+      "required": ["artifactId", "context", "status", "severity", "category", "scoreContribution", "detectorIds", "findings"],
+      "properties": {
+        "artifactId": { "type": "string" },
+        "context": { "type": "string" },
+        "status": { "type": "string", "enum": ["passed", "finding", "inconclusive"] },
+        "severity": { "type": "string" },
+        "category": { "type": "string" },
+        "scoreContribution": { "type": "number" },
+        "detectorIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/detectionResult" }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "totalTests", "passed", "finding", "inconclusive",
+        "infoFindings", "weakFindings", "mediumFindings", "strongFindings", "hardFindings",
+        "score", "verdict", "botDetected", "suspicious", "coverage",
+        "criticalChecksTotal", "criticalChecksCompleted", "criticalChecksInconclusive",
+        "uniqueEvidenceCount", "independentCategoryCount", "verdictRule"
+      ],
+      "properties": {
+        "totalTests": { "type": "integer" },
+        "passed": { "type": "integer" },
+        "finding": { "type": "integer" },
+        "inconclusive": { "type": "integer" },
+        "infoFindings": { "type": "integer" },
+        "weakFindings": { "type": "integer" },
+        "mediumFindings": { "type": "integer" },
+        "strongFindings": { "type": "integer" },
+        "hardFindings": { "type": "integer" },
+        "score": { "type": "number" },
+        "verdict": { "type": "string", "enum": ["human", "suspicious", "bot", "unknown"] },
+        "botDetected": { "type": "boolean" },
+        "suspicious": { "type": "boolean" },
+        "coverage": { "type": "number" },
+        "criticalChecksTotal": { "type": "integer" },
+        "criticalChecksCompleted": { "type": "integer" },
+        "criticalChecksInconclusive": { "type": "integer" },
+        "uniqueEvidenceCount": { "type": "integer" },
+        "independentCategoryCount": { "type": "integer" },
+        "verdictRule": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,16 +1,8 @@
 /**
  * UI rendering helpers for detector results
  */
-import type { RawDetectorValue, UIStatus } from './detector-types';
+import type { NormalizedTestResult, ScoringResult, UIStatus } from './detector-types';
 import { TEST_DESCRIPTIONS } from './test-descriptions';
-
-export interface ResultElementOptions {
-  label: string;
-  value: RawDetectorValue;
-  isBoolean?: boolean;
-  details?: unknown;
-  showLikelySource?: boolean;
-}
 
 let modalContainer: HTMLElement | null = null;
 let modalTitle: HTMLElement | null = null;
@@ -72,17 +64,52 @@ function closeModal(): void {
   if (modalContainer) modalContainer.classList.remove('visible');
 }
 
+function displayLabelAndClass(severity: string, status: string): { label: string; cls: string } {
+  if (status === 'inconclusive') return { label: 'INCONCLUSIVE', cls: 'inconclusive' };
+  if (status === 'passed') return { label: 'NO', cls: 'false' };
+
+  switch (severity) {
+    case 'hard':
+      return { label: 'HARD', cls: 'hard' };
+    case 'strong':
+      return { label: 'STRONG', cls: 'strong' };
+    case 'medium':
+      return { label: 'MEDIUM', cls: 'medium' };
+    case 'weak':
+      return { label: 'WEAK', cls: 'weak' };
+    default:
+      return { label: 'INFO', cls: 'inconclusive' };
+  }
+}
+
+function renderDetails(result: NormalizedTestResult): string {
+  if (result.findings && result.findings.length > 0) {
+    return result.findings
+      .filter(f => f.status !== 'passed')
+      .map(f => f.description)
+      .join('; ') || '';
+  }
+  if (result.description) return result.description;
+  if (result.value && typeof result.value === 'object') {
+    const v = result.value as Record<string, unknown>;
+    if (typeof v.description === 'string') return v.description;
+    if (typeof v.reason === 'string') {
+      let text = `Reason: ${v.reason}`;
+      if (typeof v.message === 'string') text += ` (${v.message})`;
+      return text;
+    }
+    return JSON.stringify(result.value).slice(0, 120);
+  }
+  return String(result.value ?? '');
+}
+
 /**
- * Create a result item element for the UI
- * Supports: PASSED, FAILED (WEAK, MEDIUM, STRONG), INCONCLUSIVE
+ * Create a result item element from a normalized test result.
+ *
+ * The display severity is taken directly from the scoring result; the UI never
+ * independently infers severity from raw values.
  */
-export function createResultElement(
-  label: string,
-  value: RawDetectorValue,
-  isBoolean = true,
-  details: unknown = null,
-  showLikelySource = false
-): HTMLElement {
+export function createResultElement(label: string, result: NormalizedTestResult): HTMLElement {
   const div = document.createElement('div');
   div.className = 'result-item';
 
@@ -90,52 +117,7 @@ export function createResultElement(
   labelSpan.className = 'label';
   labelSpan.textContent = label;
 
-  // Determine status from raw value and details
-  const detailsObj = details && typeof details === 'object' ? details : null;
-  const isInconclusive = !isBoolean && detailsObj && (detailsObj as Record<string, unknown>).inconclusive === true;
-
-  // Special case: stack trace source — only fail when automation source is confirmed
-  const isStackTraceNonAutomation =
-    showLikelySource &&
-    detailsObj &&
-    (detailsObj as Record<string, unknown>).likelySource !== 'automation';
-
-  const isFailed = isStackTraceNonAutomation
-    ? false
-    : (!isInconclusive && (isBoolean ? value === true : (value !== false && value !== null && value !== undefined)));
-
-  // Determine display label based on severity info in details
-  let displayLabel: string;
-  let displayClass: string;
-
-  if (isInconclusive) {
-    displayLabel = 'INCONCLUSIVE';
-    displayClass = 'inconclusive';
-  } else if (isFailed) {
-    let sev = 'strong';
-    if (detailsObj) {
-      const d = detailsObj as Record<string, unknown>;
-      if (d.severity && typeof d.severity === 'string') {
-        sev = d.severity.toLowerCase();
-      } else if (d.weak === true) {
-        sev = 'weak';
-      }
-    }
-    // Map severity to display
-    if (sev === 'weak') {
-      displayLabel = 'WEAK';
-      displayClass = 'weak';
-    } else if (sev === 'medium') {
-      displayLabel = 'MEDIUM';
-      displayClass = 'medium';
-    } else {
-      displayLabel = 'STRONG';
-      displayClass = 'strong';
-    }
-  } else {
-    displayLabel = 'NO';
-    displayClass = 'false';
-  }
+  const { label: displayLabel, cls: displayClass } = displayLabelAndClass(result.severity, result.status);
 
   const valueSpan = document.createElement('span');
   valueSpan.className = `value ${displayClass}`;
@@ -159,36 +141,11 @@ export function createResultElement(
   div.appendChild(labelWrap);
   div.appendChild(valueSpan);
 
-  // Add details tooltip for failed or inconclusive tests
-  if ((isFailed || isInconclusive) && details) {
+  if (result.status !== 'passed' && (result.description || result.findings)) {
     const detailsSpan = document.createElement('span');
     detailsSpan.className = 'result-details';
-
-    let detailsText = '';
-
-    // Special handling for isAutomatedViaStackTrace - show likelySource prominently
-    if (showLikelySource && detailsObj && (detailsObj as Record<string, string>).likelySource) {
-      detailsText = `[${(detailsObj as Record<string, string>).likelySource.toUpperCase()}] `;
-    }
-
-    if (typeof details === 'object' && details !== null) {
-      const d = details as Record<string, unknown>;
-      if (d.description && typeof d.description === 'string') {
-        detailsText += d.description;
-      } else if (d.reason && typeof d.reason === 'string') {
-        detailsText += `Reason: ${d.reason}`;
-        if (d.message && typeof d.message === 'string') {
-          detailsText += ` (${d.message})`;
-        }
-      } else {
-        detailsText += JSON.stringify(details).slice(0, 100);
-      }
-    } else {
-      detailsText += String(details);
-    }
-
-    detailsSpan.textContent = detailsText;
-    detailsSpan.title = detailsText;
+    detailsSpan.textContent = renderDetails(result);
+    detailsSpan.title = detailsSpan.textContent;
     div.appendChild(detailsSpan);
     div.classList.add('has-details');
   }
@@ -215,4 +172,21 @@ export function updateOverallStatus(uiStatus: UIStatus, containerId = 'overall-s
   badge.className = `status-badge ${uiStatus.statusClass}`;
   badge.textContent = uiStatus.statusText;
   statusContainer.appendChild(badge);
+}
+
+/**
+ * Render a full scoring result into a container.
+ */
+export function renderResults(scoring: ScoringResult, container: HTMLElement): void {
+  container.innerHTML = '';
+
+  const resultsGrid = document.createElement('div');
+  resultsGrid.className = 'results-grid';
+
+  for (const [name, result] of Object.entries(scoring.tests)) {
+    resultsGrid.appendChild(createResultElement(name, result));
+  }
+
+  container.appendChild(resultsGrid);
+  updateOverallStatus(scoring.uiStatus);
 }

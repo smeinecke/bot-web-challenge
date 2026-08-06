@@ -1,6 +1,14 @@
 /**
  * Browser fingerprinting and bot detection checks
  */
+import {
+  finding,
+  inconclusive,
+  pass,
+  type DetectionCategory,
+  type DetectionResult,
+  type DetectionSeverity,
+} from './detector-types';
 
 // Bot user agent patterns with confidence levels
 const BOT_UA_PATTERNS = [
@@ -66,13 +74,13 @@ export function checkWebdriver(): boolean {
 }
 
 /**
- * Check whether navigator.webdriver is null instead of undefined.
+ * Check whether navigator.webdriver is null.
  *
- * In a real Chrome browser navigator.webdriver is either `true` (automation
- * active) or `undefined` (absent — property not exposed). It is never `null`.
- * A patched Chromium build that changes the IDL type to `boolean?` and returns
- * `std::nullopt` from C++ produces JavaScript `null` — typeof null === "object"
- * is a well-known Cloudflare/Datadome bot signal.
+ * In a normal, unpatched browser `navigator.webdriver` is either `undefined`
+ * (not present) or, when under automation, `true`. It is not `null`. A patched
+ * Chromium build that changes the IDL type to a nullable boolean and returns
+ * C++ `std::nullopt` produces JavaScript `null` — a known anti-detection
+ * fingerprint.
  */
 export function checkWebdriverNull(): boolean {
   return navigator.webdriver === null;
@@ -318,35 +326,218 @@ export function checkInconsistentGPUFeatures(): Record<string, unknown> | false 
   }
 }
 
-/** Check CDP via Error.prepareStackTrace */
-export function checkCDPViaStackTrace(): Record<string, unknown> | false {
+function hashString(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + c;
+    hash |= 0;
+  }
+  return hash;
+}
+
+interface PrepareStackTraceInfo {
+  source: string;
+  sourceHash: number;
+  sourcePreview: string;
+  isNative: boolean;
+  descriptorOwner: string;
+  isDataProperty: boolean;
+  isGetter: boolean;
+}
+
+function getPrepareStackTraceInfo(ErrorCtor: unknown): PrepareStackTraceInfo | null {
   try {
-    const handler = (Error as { prepareStackTrace?: unknown }).prepareStackTrace;
-    if (typeof handler === 'undefined') return false;
+    if (typeof ErrorCtor !== 'function') return null;
 
-    const handlerString = (handler as (...args: unknown[]) => unknown).toString();
-    if (handlerString.includes('[native code]')) return false;
-
-    const handlerLower = handlerString.toLowerCase();
-    let likelySource = 'unknown-script';
-
-    if (handlerLower.includes('devtools') || handlerLower.includes('chrome-extension') || handlerLower.includes('inspector')) {
-      likelySource = 'devtools';
-    } else if (handlerLower.includes('selenium') || handlerLower.includes('webdriver') || handlerLower.includes('puppeteer') || handlerLower.includes('playwright')) {
-      likelySource = 'automation';
-    } else if (handlerLower.includes('cdp') || handlerLower.includes('chromedevtools')) {
-      likelySource = 'automation';
+    let owner = 'Error';
+    let descriptor = Object.getOwnPropertyDescriptor(ErrorCtor, 'prepareStackTrace');
+    if (!descriptor && (ErrorCtor as { prototype?: unknown }).prototype) {
+      descriptor = Object.getOwnPropertyDescriptor(
+        (ErrorCtor as { prototype: Record<string, unknown> }).prototype,
+        'prepareStackTrace'
+      );
+      owner = 'Error.prototype';
     }
 
+    const handler = descriptor?.value ?? descriptor?.get?.();
+    if (typeof handler !== 'function') return null;
+
+    const source = Function.prototype.toString.call(handler);
+    const isNative = source.includes('[native code]');
+
     return {
-      reason: 'nonNativePrepareStackTrace',
-      likelySource,
-      handlerPreview: handlerString.slice(0, 150),
-      description: `Non-native prepareStackTrace handler [${likelySource}]: ${handlerString.slice(0, 60)}...`
+      source,
+      sourceHash: hashString(source),
+      sourcePreview: source.slice(0, 80).replace(/\s+/g, ' '),
+      isNative,
+      descriptorOwner: owner,
+      isDataProperty: descriptor ? 'value' in descriptor : false,
+      isGetter: descriptor ? typeof descriptor.get === 'function' : false,
     };
   } catch {
-    return false;
+    return null;
   }
+}
+
+function classifyPrepareStackTraceSource(source: string): {
+  severity: DetectionSeverity;
+  category: DetectionCategory;
+  reason: string;
+  description: string;
+} {
+  const lower = source.toLowerCase();
+
+  const automationKeywords = [
+    'selenium',
+    'webdriver',
+    'playwright',
+    'puppeteer',
+    'cdp',
+    'chrome devtools protocol',
+    'chromedevtools',
+  ];
+  const devtoolsKeywords = ['devtools', 'chrome-extension', 'inspector'];
+
+  const hasAutomation = automationKeywords.some(k => lower.includes(k));
+  const hasDevTools = devtoolsKeywords.some(k => lower.includes(k));
+
+  if (hasAutomation) {
+    return {
+      severity: 'strong',
+      category: 'automation-global',
+      reason: 'non-native-automation-handler',
+      description: 'Error.prepareStackTrace handler contains explicit automation framework markers',
+    };
+  }
+
+  if (hasDevTools) {
+    return {
+      severity: 'info',
+      category: 'api-integrity',
+      reason: 'non-native-devtools-handler',
+      description: 'Error.prepareStackTrace handler appears to originate from browser DevTools or an extension',
+    };
+  }
+
+  return {
+    severity: 'medium',
+    category: 'browser-integrity',
+    reason: 'non-native-unknown-handler',
+    description: 'Error.prepareStackTrace handler is non-native with unknown or obfuscated source',
+  };
+}
+
+/**
+ * Inspect Error.prepareStackTrace across the main realm and a clean same-origin
+ * iframe. Non-native handlers are classified by source. A mismatch between the
+ * main realm and the iframe is recorded as separate integrity evidence.
+ */
+export function checkPrepareStackTrace(): DetectionResult[] {
+  const results: DetectionResult[] = [];
+
+  try {
+    const mainInfo = getPrepareStackTraceInfo(Error);
+    if (!mainInfo) {
+      results.push(
+        pass('browser-integrity', 'prepare-stack-trace:main', 'main', 'no-handler', 'Error.prepareStackTrace is not defined')
+      );
+    } else if (mainInfo.isNative) {
+      results.push(
+        pass('browser-integrity', 'prepare-stack-trace:main', 'main', 'native-handler', 'Error.prepareStackTrace is native')
+      );
+    } else {
+      const classification = classifyPrepareStackTraceSource(mainInfo.source);
+      results.push(
+        finding(
+          classification.severity,
+          classification.category,
+          'prepare-stack-trace:main',
+          'main',
+          classification.reason,
+          classification.description,
+          {
+            sourceHash: mainInfo.sourceHash,
+            sourcePreview: mainInfo.sourcePreview,
+            sourceLength: mainInfo.source.length,
+            descriptorOwner: mainInfo.descriptorOwner,
+            isDataProperty: mainInfo.isDataProperty,
+            isGetter: mainInfo.isGetter,
+          }
+        )
+      );
+    }
+
+    // Cross-realm comparison using a clean same-origin iframe.
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    iframe.src = 'about:blank';
+    document.body.appendChild(iframe);
+
+    try {
+      const frameWindow = iframe.contentWindow;
+      if (frameWindow) {
+        const frameError = (frameWindow as unknown as Record<string, unknown>).Error;
+        const frameInfo = getPrepareStackTraceInfo(frameError);
+        if (frameInfo) {
+          const mainNative = mainInfo?.isNative ?? false;
+          const frameNative = frameInfo.isNative;
+          const mismatch = mainNative !== frameNative || (mainInfo && frameInfo.sourceHash !== mainInfo.sourceHash);
+
+          if (mismatch) {
+            results.push(
+              finding(
+                'medium',
+                'browser-integrity',
+                'prepare-stack-trace:realm-mismatch',
+                'iframe',
+                'realm-mismatch',
+                'Error.prepareStackTrace handler or descriptor differs between main realm and clean iframe',
+                {
+                  mainNative,
+                  frameNative,
+                  mainHash: mainInfo?.sourceHash,
+                  frameHash: frameInfo.sourceHash,
+                }
+              )
+            );
+          }
+        }
+      }
+    } catch {
+      // iframe inspection failed — do not convert to a pass.
+      results.push(
+        inconclusive(
+          'browser-integrity',
+          'prepare-stack-trace:realm-mismatch',
+          'iframe',
+          'iframe-inspection-failed',
+          'Could not inspect Error.prepareStackTrace in clean same-origin iframe'
+        )
+      );
+    } finally {
+      document.body.removeChild(iframe);
+    }
+  } catch (e) {
+    results.push(
+      inconclusive(
+        'browser-integrity',
+        'prepare-stack-trace:main',
+        'main',
+        'inspection-exception',
+        `Error.prepareStackTrace inspection failed: ${(e as Error).message}`
+      )
+    );
+  }
+
+  return results;
+}
+
+/**
+ * @deprecated Use `checkPrepareStackTrace` for the new structured result model.
+ */
+export function checkCDPViaStackTrace(): DetectionResult[] {
+  return checkPrepareStackTrace();
 }
 
 /** Check audio fingerprint for headless indicators */
@@ -564,31 +755,76 @@ export function checkHeadlessResolution(): Record<string, unknown> | false {
   return false;
 }
 
-/** Check if browser chrome UI is missing */
-export function checkMissingBrowserChrome(): Record<string, unknown> | false {
-  if (window.outerWidth === 0 || window.outerHeight === 0) {
-    return {
-      reason: 'zeroOuter',
-      outerWidth: window.outerWidth,
-      outerHeight: window.outerHeight,
-      description: `outerWidth/Height is 0 — classic headless browser indicator`
-    };
+/**
+ * Check browser chrome dimensions.
+ *
+ * - Zero outer dimensions are a strong classic-headless signal.
+ * - outer < inner is a strong browser-consistency violation.
+ * - outer === inner outside fullscreen is a weak contextual observation.
+ */
+export function checkMissingBrowserChrome(): DetectionResult[] {
+  const results: DetectionResult[] = [];
+  const outerWidth = window.outerWidth;
+  const outerHeight = window.outerHeight;
+  const innerWidth = window.innerWidth;
+  const innerHeight = window.innerHeight;
+
+  if (outerWidth === 0 || outerHeight === 0) {
+    results.push(
+      finding(
+        'strong',
+        'environment',
+        'browser-chrome:zero-outer',
+        'main',
+        'zero-outer',
+        `outerWidth/Height is 0 — classic headless browser indicator`,
+        { outerWidth, outerHeight }
+      )
+    );
+    return results;
   }
 
-  if (document.fullscreenElement) return false;
-
-  if (window.outerWidth < window.innerWidth || window.outerHeight < window.innerHeight) {
-    return {
-      reason: 'noUIChrome',
-      outerWidth: window.outerWidth,
-      outerHeight: window.outerHeight,
-      innerWidth: window.innerWidth,
-      innerHeight: window.innerHeight,
-      description: `outer < inner (outer: ${window.outerWidth}x${window.outerHeight}, inner: ${window.innerWidth}x${window.innerHeight}) — impossible in real browser`
-    };
+  if (document.fullscreenElement) {
+    results.push(
+      pass('environment', 'browser-chrome', 'main', 'fullscreen', 'Fullscreen active — chrome equality expected')
+    );
+    return results;
   }
 
-  return false;
+  if (outerWidth < innerWidth || outerHeight < innerHeight) {
+    results.push(
+      finding(
+        'strong',
+        'environment',
+        'browser-chrome:outer-lt-inner',
+        'main',
+        'outer-lt-inner',
+        `outer < inner (outer: ${outerWidth}x${outerHeight}, inner: ${innerWidth}x${innerHeight}) — impossible in real browser`,
+        { outerWidth, outerHeight, innerWidth, innerHeight }
+      )
+    );
+    return results;
+  }
+
+  if (outerWidth > 0 && outerWidth === innerWidth && outerHeight === innerHeight) {
+    results.push(
+      finding(
+        'weak',
+        'environment',
+        'browser-chrome:outer-eq-inner',
+        'main',
+        'outer-eq-inner',
+        'outerWidth/Height equals innerWidth/Height outside fullscreen — weak headless/emulation context',
+        { outerWidth, outerHeight, innerWidth, innerHeight }
+      )
+    );
+    return results;
+  }
+
+  results.push(
+    pass('environment', 'browser-chrome', 'main', 'no-anomaly', 'Browser chrome dimensions look normal')
+  );
+  return results;
 }
 
 /** Check screen availability */
@@ -946,8 +1182,15 @@ export function checkAutomationGlobalsExtended(): Record<string, unknown> | fals
   return false;
 }
 
-/** Analyze weak signals collectively */
-export function analyzeWeakSignals(): Record<string, unknown> | false {
+/**
+ * Analyze weak signals collectively.
+ *
+ * Each signal is preserved in the raw observation, but scoring fuses them into
+ * a single `suspicious-weak-signals` artifact. `navigator.webdriver === null`
+ * is emitted as the dedicated `webdriver:null` artifact so it is never double
+ * scored.
+ */
+export function analyzeWeakSignals(): DetectionResult[] {
   const signals: string[] = [];
 
   if (typeof window.devicePixelRatio === 'undefined') {
@@ -965,9 +1208,6 @@ export function analyzeWeakSignals(): Record<string, unknown> | false {
     }
   }
 
-  // navigator.webdriver === null means typeof === "object" — never happens in a
-  // real browser; indicates a patched Chromium returning C++ std::nullopt via a
-  // nullable IDL type. Strong enough signal to report on its own.
   if (navigator.webdriver === null) {
     signals.push('webdriverIsNull');
   }
@@ -977,23 +1217,51 @@ export function analyzeWeakSignals(): Record<string, unknown> | false {
     signals.push('toStringTampered');
   }
 
-  // webdriverIsNull is strong enough to report alone; all others need 2+.
-  if (signals.includes('webdriverIsNull') || signals.length >= 2) {
-    const descriptions: Record<string, string> = {
-      'noDevicePixelRatio': 'Missing devicePixelRatio',
-      'noVendor': 'Missing navigator.vendor',
-      'fakeWebdriverFalse': 'navigator.webdriver set to false (should be undefined)',
-      'webdriverIsNull': 'navigator.webdriver is null (typeof === "object") — should be undefined in a real browser',
-      'toStringTampered': 'Function.prototype.toString has been modified'
-    };
+  const results: DetectionResult[] = [];
+  const descriptions: Record<string, string> = {
+    'noDevicePixelRatio': 'Missing devicePixelRatio',
+    'noVendor': 'Missing navigator.vendor',
+    'fakeWebdriverFalse': 'navigator.webdriver set to false (should not be a data property)',
+    'webdriverIsNull': 'navigator.webdriver is null — not a normal unpatched browser value',
+    'toStringTampered': 'Function.prototype.toString has been modified'
+  };
 
-    return {
-      signals,
-      description: `Weak signals: ${signals.slice(0, 2).map(s => descriptions[s] || s).join(', ')}${signals.length > 2 ? '...' : ''}`
-    };
+  if (navigator.webdriver === null) {
+    results.push(
+      finding(
+        'hard',
+        'webdriver',
+        'webdriver:null',
+        'main',
+        'webdriver-is-null',
+        'navigator.webdriver is null — patched Chromium IDL returning std::nullopt',
+        { signal: 'webdriverIsNull' }
+      )
+    );
   }
 
-  return false;
+  const nonWebdriverSignals = signals.filter(s => s !== 'webdriverIsNull');
+  if (nonWebdriverSignals.length >= 2) {
+    results.push(
+      finding(
+        'weak',
+        'browser-integrity',
+        'suspicious-weak-signals',
+        'main',
+        'multiple-weak-signals',
+        `Weak signals: ${nonWebdriverSignals.slice(0, 2).map(s => descriptions[s] || s).join(', ')}${nonWebdriverSignals.length > 2 ? '...' : ''}`,
+        { signals: nonWebdriverSignals }
+      )
+    );
+  }
+
+  if (results.length === 0) {
+    results.push(
+      pass('browser-integrity', 'suspicious-weak-signals', 'main', 'no-weak-signals', 'No weak signals detected')
+    );
+  }
+
+  return results;
 }
 
 /** Check for CDP/automation leaks via blob URL iframe */

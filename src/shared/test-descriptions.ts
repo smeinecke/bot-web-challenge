@@ -12,7 +12,7 @@ export const TEST_DESCRIPTIONS: Record<string, string> = {
     'Checks whether navigator.webdriver is set to true. This property is automatically enabled by Chrome when controlled by automation tools (Selenium, Chromedriver, etc.). In a normal browser it should be undefined.',
 
   hasWebdriverNull:
-    'Checks whether navigator.webdriver is null. In a real browser the property is either true (automation active) or undefined (absent). A null value — where typeof null === "object" — indicates a patched Chromium that changed the IDL type to nullable (boolean?) and returns C++ std::nullopt, a fingerprint unique to certain anti-detection builds.',
+    'Checks whether navigator.webdriver is null. In a normal, unpatched browser this property is not null (it is either undefined when no automation is present, or true when the browser is under automation). A null value indicates a patched Chromium IDL returning C++ std::nullopt.',
 
   hasWebdriverInFrameTrue:
     'Creates a hidden iframe and checks if navigator.webdriver is true inside it. Some anti-detection scripts only patch the main window, leaving the iframe untouched, so this test can catch evasion attempts.',
@@ -60,7 +60,7 @@ export const TEST_DESCRIPTIONS: Record<string, string> = {
     'Checks if the screen resolution matches known headless Chrome defaults (e.g. 800x600) or has an implausible aspect ratio, suggesting a non-interactive environment.',
 
   hasMissingBrowserChrome:
-    'Validates that outerWidth/outerHeight are non-zero and that outer dimensions are larger than inner dimensions (normal browser chrome). Zero outer dimensions or outer < inner are strong headless indicators.',
+    'Validates outerWidth/outerHeight relative to innerWidth/innerHeight. Zero outer dimensions are a strong classic-headless signal. outer < inner is a strong browser-consistency violation. outer === inner outside fullscreen is a weak contextual observation and cannot produce a bot verdict alone.',
 
   hasScreenAvailabilityAnomaly:
     'On Windows desktop, checks whether screen.availWidth/Height equals screen.width/height. A missing taskbar difference suggests a remote desktop or headless session.',
@@ -75,7 +75,7 @@ export const TEST_DESCRIPTIONS: Record<string, string> = {
     'Performs a canvas fingerprinting drawing routine and checks the resulting data URL. Empty or very short data indicates a blocked, headless, or privacy-hardened canvas implementation.',
 
   isAutomatedViaStackTrace:
-    'Checks Error.prepareStackTrace for a non-native handler. Automation frameworks and browser extensions often inject custom stack-trace handlers; the handler body is analyzed to distinguish devtools from automation.',
+    'Inspects Error.prepareStackTrace in the main realm and a clean same-origin iframe. Non-native handlers are classified by source: explicit automation markers (Selenium, WebDriver, Playwright, Puppeteer, CDP) are strong automation findings; DevTools or extension handlers are informational; unknown/obfuscated handlers are medium integrity findings. A mismatch between the main realm and a clean iframe is separate corroborating integrity evidence.',
 
   hasAudioFingerprintIssue:
     'Uses an OfflineAudioContext to render a short audio buffer and sums sample magnitudes. Headless/sandboxed environments often produce a silent or near-zero sum due to missing audio subsystem.',
@@ -118,4 +118,10 @@ export const TEST_DESCRIPTIONS: Record<string, string> = {
 
   hasAdvancedBotSignals:
     'Looks for advanced interaction anomalies: synthetic (untrusted) events, clicks exactly at element center, clicks at (0,0), empty key-event codes, and unnaturally uniform keystroke intervals.',
+
+  insufficientObservationWindow:
+    'Tracks whether enough interaction data has been collected to analyze behavior. If not, the result is inconclusive and prevents a clean human verdict.',
+
+  lowObservationSubmission:
+    'Analyzes submissions that occur with very little interaction data. It considers populated fields without trusted keyboard/input activity, extremely fast submit after focus, missing focus history, direct value assignment, and no pointer activity. Ordinary browser autofill is not classified as a bot without corroborating anomalies.',
 };

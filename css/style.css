@@ -160,6 +160,7 @@ header p {
     font-size: 0.75rem;
 }
 
+.value.hard,
 .value.strong,
 .value.true {
     background-color: rgba(248, 81, 73, 0.2);

@@ -6,12 +6,15 @@ A standalone bot detection challenge for testing browser automation stealth capa
 
 ## Overview
 
-This project has been migrated to TypeScript with Vite for improved developer experience and build-time metadata injection. The detection functionality remains the same, with added type safety and automated deployment via GitHub Actions.
+This project has been migrated to TypeScript with Vite for improved developer experience and build-time metadata injection. It now uses a **structured detector-result model** and an **evidence-fusion scoring engine** to classify the browser as `human`, `suspicious`, or `bot`. Findings carry a stable `artifactId` (the object of evidence) and a severity (`info`, `weak`, `medium`, `strong`, `hard`) in a context (`main`, `iframe`, `worker`, `blob-iframe`, `interaction`).
+
+The scoring engine deduplicates artifacts, treats the same artifact reported from multiple detectors as a single piece of evidence, and applies cross-category rules. Direct automation evidence (`hard`/`strong` in `webdriver`, `cdp`, or `automation-global`) is sufficient for a `bot` verdict. Two independent medium+ categories or several independent weak categories can corroborate into a `bot` verdict. A single weak category remains `suspicious` and cannot produce a `bot` verdict on its own.
 
 ### Tech Stack
 
 - **TypeScript** - Type-safe JavaScript with modern language features
 - **Vite** - Fast build tool with hot module replacement
+- **Vitest** + **jsdom** - Unit and regression testing
 - **GitHub Actions** - Automated CI/CD and GitHub Pages deployment
 
 ### Build Info
@@ -23,7 +26,7 @@ The JSON output now includes build metadata:
   "detector": {
     "name": "bot-web-challenge",
     "version": "0.1.0",
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "buildTime": "2026-04-30T12:34:56.000Z",
     "gitCommit": "abc1234",
     "gitBranch": "main"
@@ -36,7 +39,7 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 ### Pages
 
 - **`index.html`** - Landing page with links to both tests
-- **`static.html`** - Static fingerprinting tests (21+ bot detection signals)
+- **`static.html`** - Static fingerprinting tests (25+ bot detection signals)
 - **`interactions.html`** - Interaction-based tests (mouse, typing, timing analysis)
 
 ### Static Detection Tests
@@ -45,6 +48,7 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 |------|-------------|
 | `hasBotUserAgent` | Detects known bot patterns in User-Agent |
 | `hasWebdriverTrue` | Checks `navigator.webdriver === true` |
+| `hasWebdriverNull` | Checks `navigator.webdriver === null` (patched Chromium IDL) |
 | `hasWebdriverInFrameTrue` | Checks webdriver in iframe context |
 | `isPlaywright` | Detects Playwright-specific globals |
 | `hasInconsistentChromeObject` | Validates `window.chrome` properties |
@@ -55,7 +59,7 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 | `isHeadlessChrome` | Detects headless-specific features |
 | `isWebGLInconsistent` | Detects SwiftShader/llvmpipe renderers |
 | `isAutomatedWithCDP` | Detects CDP automation markers |
-| `isAutomatedViaStackTrace` | Detects CDP via Error.prepareStackTrace |
+| `isAutomatedViaStackTrace` | Classifies `Error.prepareStackTrace` handlers |
 | `hasCanvasAvailabilityIssue` | Validates canvas API availability |
 | `hasAudioFingerprintIssue` | Detects headless audio output |
 | `hasInconsistentClientHints` | Checks User-Agent Data consistency |
@@ -65,6 +69,7 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 | `hasInconsistentWorkerValues` | Compares main/worker context values |
 | `hasHighHardwareConcurrency` | Detects VM/cloud environments (>16 cores) |
 | `hasHeadlessChromeDefaultScreenResolution` | Detects headless resolutions |
+| `hasMissingBrowserChrome` | Validates `outerWidth/outerHeight` vs `innerWidth/innerHeight` |
 | `hasSuspiciousWeakSignals` | Collective weak signal analysis |
 
 > **Important Note on Weak Signals**
@@ -83,9 +88,24 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 
 | Test | Description |
 |------|-------------|
+| `insufficientObservationWindow` | Reports inconclusive when not enough data is collected |
+| `lowObservationSubmission` | Detects script-like submissions with little trusted interaction |
 | `suspiciousClientSideBehavior` | Mouse path analysis, form timing |
 | `superHumanSpeed` | Typing speed > 15 CPS |
 | `hasCDPMouseLeak` | Detects CDP screen coordinate leak |
+| `hasAdvancedBotSignals` | Synthetic events, exact-center clicks, uniform keystrokes |
+
+### Privacy Note for Interaction Tracking
+
+Interaction tracking intentionally does **not** store any of the following:
+
+- Typed characters / `KeyboardEvent.key`
+- `KeyboardEvent.code` / `KeyboardEvent.keyCode`
+- Input field values, passwords, or pasted text
+- Clipboard contents
+- `MouseEvent.target` references
+
+Only timing, event-trust flags, and structural observations (e.g. `inputType`, mouse coordinates, click position) are retained for analysis.
 
 ## Development
 
@@ -108,10 +128,11 @@ npm run dev
 
 Runs the dev server on `http://localhost:5173`.
 
-### Build
+### Test & Build
 
 ```bash
 npm run typecheck
+npm run test
 npm run build
 ```
 
@@ -127,14 +148,14 @@ The project is configured for automatic deployment to GitHub Pages:
    - Source: **GitHub Actions**
 
 2. On every push to `main`:
-   - CI runs `npm run typecheck` and `npm run build`
+   - CI runs `npm run typecheck`, `npm run test`, and `npm run build`
    - The `dist/` folder is automatically deployed
 
 3. Manual deployment: Trigger the `deploy-pages.yml` workflow via **Actions** tab
 
 ### GitHub Pages Base Path
 
-The Vite config automatically detects GitHub Pages environment via `GITHUB_PAGES` and `GITHUB_REPOSITORY` environment variables. For project pages (e.g., `https://username.github.io/repo-name/`), the base path is set automatically.
+The Vite config automatically detects GitHub Pages environment via `GITHUB_PAGES` and `GITHUB_REPOSITORY` environment variables. For project pages (e.g. `https://username.github.io/repo-name/`), the base path is set automatically.
 
 ### Manual Deployment
 
@@ -154,19 +175,50 @@ Click "Show JSON Output" or "Copy JSON" to get machine-readable results:
 
 ```json
 {
-  "timestamp": "2024-01-15T10:30:00Z",
+  "detector": {
+    "name": "bot-web-challenge",
+    "version": "0.1.0",
+    "schemaVersion": 2,
+    "buildTime": "...",
+    "gitCommit": "...",
+    "gitBranch": "..."
+  },
+  "timestamp": "2026-04-30T12:34:56.000Z",
   "userAgent": "...",
   "url": "...",
   "tests": {
-    "hasWebdriverTrue": { "passed": true, "value": false, "description": null },
-    "isHeadlessChrome": { "passed": false, "value": {...}, "description": "..." }
+    "hasWebdriverTrue": {
+      "status": "finding",
+      "passed": false,
+      "severity": "hard",
+      "category": "webdriver",
+      "artifactId": "webdriver:true",
+      "description": "navigator.webdriver === true"
+    },
+    "isAutomatedViaStackTrace": {
+      "status": "passed",
+      "passed": true,
+      "severity": "none",
+      "category": "browser-integrity",
+      "artifactId": "prepare-stack-trace:main",
+      "description": "Error.prepareStackTrace is native"
+    }
   },
+  "findings": [...],
+  "scoredArtifacts": [...],
   "summary": {
-    "totalTests": 22,
-    "passed": 20,
-    "failed": 2,
+    "totalTests": 30,
+    "passed": 28,
+    "failed": 1,
+    "inconclusive": 1,
     "botDetected": true,
-    "indicatorCount": 2
+    "verdict": "bot",
+    "verdictRule": "hard-direct",
+    "uniqueEvidenceCount": 2,
+    "independentCategoryCount": 2,
+    "coverage": 100,
+    "criticalChecksTotal": 8,
+    "criticalChecksInconclusive": 0
   }
 }
 ```

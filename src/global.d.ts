@@ -8,7 +8,7 @@ interface Navigator {
     platform?: string;
     mobile?: boolean;
   };
-  webdriver?: boolean;
+  webdriver?: boolean | null;
 }
 
 interface Window {
