@@ -7,6 +7,14 @@
  * Only timing, event-integrity flags, and structural observations are kept.
  */
 import { finding, inconclusive, pass, type DetectionResult } from './detector-types';
+import {
+  extractCDPFeatures,
+  extractFormFeatures,
+  extractKeyboardFeatures,
+  extractPointerFeatures,
+  extractSessionFeatures,
+  type BehavioralFeatureVector,
+} from './behavior-features';
 
 export interface TrackingState {
   mouseEvents: Array<Record<string, unknown>>;
@@ -287,51 +295,20 @@ export function areFieldsPopulated(): boolean {
   return Boolean((emailField?.value && emailField.value.length > 0) || (passwordField?.value && passwordField.value.length > 0));
 }
 
-function countStraightLines(): number {
-  let straightCount = 0;
-  const moveEvents = tracking.mouseEvents.filter(e => e.type === 'move');
-
-  for (let i = 2; i < moveEvents.length; i++) {
-    const p1 = moveEvents[i - 2] as { x: number; y: number };
-    const p2 = moveEvents[i - 1] as { x: number; y: number };
-    const p3 = moveEvents[i] as { x: number; y: number };
-
-    const crossProduct = Math.abs((p2.x - p1.x) * (p3.y - p2.y) - (p2.y - p1.y) * (p3.x - p2.x));
-    const distance = Math.sqrt(Math.pow(p3.x - p1.x, 2) + Math.pow(p3.y - p1.y, 2));
-    const threshold = Math.max(50, distance * 0.1);
-    if (crossProduct < threshold) {
-      straightCount++;
-    }
-  }
-
-  return straightCount;
-}
-
-function checkUniformTiming(events: Array<{ time: number }>): boolean {
-  if (events.length < 10) return false;
-
-  const intervals: number[] = [];
-  for (let i = 1; i < events.length; i++) {
-    intervals.push(events[i].time - events[i - 1].time);
-  }
-
-  const avg = intervals.reduce((a, b) => a + b, 0) / intervals.length;
-  const variance = intervals.reduce((acc, val) => acc + Math.pow(val - avg, 2), 0) / intervals.length;
-  const stdDev = Math.sqrt(variance);
-
-  return stdDev < 5;
+function hasEnoughObservation(): boolean {
+  const sessionDuration = tracking.formStartTime ? Date.now() - tracking.formStartTime : 0;
+  return (
+    (tracking.submitTime && tracking.firstFocusTime && (tracking.submitTime - tracking.firstFocusTime) > 2000) ||
+    tracking.totalKeystrokes > 5 ||
+    tracking.mouseEvents.length > 20 ||
+    sessionDuration > 3000
+  );
 }
 
 export function analyzeInsufficientObservationWindow(): DetectionResult {
   const sessionDuration = tracking.formStartTime ? Date.now() - tracking.formStartTime : 0;
 
-  const hasEnoughObservation =
-    (tracking.submitTime && tracking.firstFocusTime && (tracking.submitTime - tracking.firstFocusTime) > 2000) ||
-    tracking.totalKeystrokes > 5 ||
-    tracking.mouseEvents.length > 20 ||
-    sessionDuration > 3000;
-
-  if (!hasEnoughObservation) {
+  if (!hasEnoughObservation()) {
     return inconclusive(
       'interaction',
       'insufficient-observation-window',
@@ -355,6 +332,28 @@ export function analyzeInsufficientObservationWindow(): DetectionResult {
   );
 }
 
+/**
+ * Convert a 0-1 anomaly score into a severity label, with higher severity
+ * when multiple behavioral dimensions corroborate.
+ */
+function severityFromCorroboration(maxScore: number, corroborating: number): 'weak' | 'medium' | 'strong' {
+  if (maxScore >= 0.8 || corroborating >= 3) return 'strong';
+  if (maxScore >= 0.5 || corroborating >= 2) return 'medium';
+  return 'weak';
+}
+
+function reasonFromVector(vector: BehavioralFeatureVector, flags: string[]): string {
+  if (flags.includes('autofillLike')) return 'autofill-like';
+  if (flags.length === 0) return 'no-anomaly';
+  // Pick the strongest contributing dimension's first flag.
+  const dimPriority = ['keyboard', 'form', 'pointer', 'cdp', 'session'];
+  for (const dim of dimPriority) {
+    const d = vector[dim as keyof BehavioralFeatureVector];
+    if (d.score >= 0.25 && d.flags.length > 0) return d.flags[0];
+  }
+  return flags[0];
+}
+
 export function analyzeLowObservationSubmission(): DetectionResult[] {
   const results: DetectionResult[] = [];
 
@@ -362,26 +361,12 @@ export function analyzeLowObservationSubmission(): DetectionResult[] {
     return results;
   }
 
-  const sessionDuration = tracking.submitTime - tracking.formStartTime;
-  const formDuration = tracking.firstFocusTime && tracking.submitTime
-    ? tracking.submitTime - tracking.firstFocusTime
-    : 0;
+  const form = extractFormFeatures(tracking);
+  const session = extractSessionFeatures(tracking);
+  const keyboard = extractKeyboardFeatures(tracking);
 
-  const populated = areFieldsPopulated();
-  const hasTrustedSequence = tracking.hasTrustedFocus && tracking.hasTrustedInput;
-  const hasUntrustedInput = tracking.inputEvents.some(e => e.isTrusted === false);
-  const noPointerActivity = tracking.mouseEvents.length === 0;
-  const instantSubmit = tracking.firstFocusTime ? formDuration < 200 : false;
-
-  const autofillLike =
-    populated &&
-    tracking.hasTrustedFocus &&
-    tracking.hasTrustedInput &&
-    formDuration >= 1000 &&
-    tracking.totalKeystrokes === 0 &&
-    tracking.inputEvents.some(e => e.inputType === 'insertReplacementText');
-
-  if (autofillLike) {
+  // Autofill is a legitimate baseline and should not be scored as a bot.
+  if (form.flags.includes('autofillLike')) {
     results.push(
       pass(
         'interaction',
@@ -394,69 +379,11 @@ export function analyzeLowObservationSubmission(): DetectionResult[] {
     return results;
   }
 
-  const signals: string[] = [];
-  let score = 0;
+  const corroborating = [form, session, keyboard].filter(d => d.score >= 0.25).length;
+  const maxScore = Math.max(form.score, session.score, keyboard.score);
+  const allFlags = [...form.flags, ...session.flags, ...keyboard.flags];
 
-  if (populated && !hasTrustedSequence) {
-    signals.push('populatedWithoutTrustedSequence');
-    score += 3;
-  }
-
-  if (instantSubmit && tracking.totalKeystrokes === 0) {
-    signals.push('instantSubmitNoKeystrokes');
-    score += 2;
-  }
-
-  if (populated && !tracking.hasTrustedFocus) {
-    signals.push('noFocusHistory');
-    score += 2;
-  }
-
-  if (hasUntrustedInput) {
-    signals.push('untrustedInputEvent');
-    score += 2;
-  }
-
-  if (populated && tracking.totalKeystrokes === 0 && !tracking.hasTrustedInput) {
-    signals.push('directValueAssignmentPattern');
-    score += 2;
-  }
-
-  if (noPointerActivity && sessionDuration < 1000 && populated) {
-    signals.push('noPointerActivityShortSession');
-    score += 1;
-  }
-
-  if (tracking.hasUntrustedEvent && populated) {
-    signals.push('syntheticEventWithPopulatedFields');
-    score += 1;
-  }
-
-  if (score >= 5) {
-    results.push(
-      finding(
-        'medium',
-        'interaction',
-        'low-observation-submission',
-        'interaction',
-        'low-observation-scripted',
-        `Low-observation submission with ${signals.length} corroborating anomalies`,
-        { signals, score, formDuration, sessionDuration }
-      )
-    );
-  } else if (score >= 2) {
-    results.push(
-      finding(
-        'weak',
-        'interaction',
-        'low-observation-submission',
-        'interaction',
-        'low-observation-suspicious',
-        `Low-observation submission with ${signals.length} suspicious signals`,
-        { signals, score, formDuration, sessionDuration }
-      )
-    );
-  } else {
+  if (corroborating === 0 || maxScore < 0.25) {
     results.push(
       pass(
         'interaction',
@@ -466,21 +393,35 @@ export function analyzeLowObservationSubmission(): DetectionResult[] {
         'No low-observation scripted submission pattern detected'
       )
     );
+    return results;
   }
+
+  const severity = severityFromCorroboration(maxScore, corroborating);
+  const reason = reasonFromVector({ pointer: { score: 0, flags: [] }, keyboard, form, session, cdp: { score: 0, flags: [] } }, allFlags);
+
+  results.push(
+    finding(
+      severity,
+      'interaction',
+      'low-observation-submission',
+      'interaction',
+      reason,
+      `Low-observation submission with ${corroborating} corroborating behavioral dimensions and ${allFlags.length} flags`,
+      {
+        dimensions: ['form', 'session', 'keyboard'].filter((_, i) => [form, session, keyboard][i].score >= 0.25),
+        flags: allFlags,
+        formScore: Math.round(form.score * 100) / 100,
+        sessionScore: Math.round(session.score * 100) / 100,
+        keyboardScore: Math.round(keyboard.score * 100) / 100,
+      }
+    )
+  );
 
   return results;
 }
 
 export function analyzeSuspiciousClientSideBehavior(): DetectionResult {
-  const sessionDuration = tracking.formStartTime ? Date.now() - tracking.formStartTime : 0;
-  const hasEnoughObservation =
-    (tracking.submitTime && tracking.firstFocusTime && (tracking.submitTime - tracking.firstFocusTime) > 2000) ||
-    tracking.totalKeystrokes > 5 ||
-    tracking.mouseEvents.length > 20 ||
-    sessionDuration > 3000;
-
-  if (!hasEnoughObservation) {
-    // This is now handled by the dedicated insufficient-observation detector.
+  if (!hasEnoughObservation()) {
     return pass(
       'interaction',
       'suspicious-client-side-behavior',
@@ -490,56 +431,41 @@ export function analyzeSuspiciousClientSideBehavior(): DetectionResult {
     );
   }
 
-  const suspicious: string[] = [];
+  const pointer = extractPointerFeatures(tracking);
+  const session = extractSessionFeatures(tracking);
+  const keyboard = extractKeyboardFeatures(tracking);
 
-  if (tracking.mouseEvents.length < 10 && tracking.totalKeystrokes > 0) {
-    suspicious.push('insufficientMouseMovement');
-  }
+  const corroborating = [pointer, session, keyboard].filter(d => d.score >= 0.25).length;
+  const maxScore = Math.max(pointer.score, session.score, keyboard.score);
+  const allFlags = [...pointer.flags, ...session.flags, ...keyboard.flags];
 
-  if (tracking.mouseEvents.length > 50) {
-    const straightLines = countStraightLines();
-    const moveEvents = tracking.mouseEvents.filter(e => e.type === 'move').length;
-    if (moveEvents > 30 && straightLines > moveEvents * 0.95) {
-      suspicious.push('tooManyStraightLines');
-    }
-  }
-
-  if (tracking.mouseEvents.length > 20) {
-    const uniformTiming = checkUniformTiming(tracking.mouseEvents as Array<{ time: number }>);
-    if (uniformTiming) {
-      suspicious.push('uniformEventTiming');
-    }
-  }
-
-  const formDuration = tracking.submitTime && tracking.firstFocusTime ? tracking.submitTime - tracking.firstFocusTime : 0;
-  if (tracking.firstFocusTime && tracking.submitTime && formDuration < 500) {
-    suspicious.push('instantFormCompletion');
-  }
-
-  if (tracking.totalKeystrokes === 0 && tracking.submitTime && formDuration > 1000) {
-    if (areFieldsPopulated() && !tracking.hasTrustedInput) {
-      suspicious.push('noInputSequence');
-    }
-  }
-
-  if (suspicious.length > 0) {
-    return finding(
-      'weak',
+  if (corroborating === 0 || maxScore < 0.25) {
+    return pass(
       'interaction',
       'suspicious-client-side-behavior',
       'interaction',
-      'suspicious-client-side-patterns',
-      `Suspicious client-side behavior: ${suspicious.join(', ')}`,
-      { behaviors: suspicious }
+      'no-suspicious-behavior',
+      'No suspicious client-side behavior detected'
     );
   }
 
-  return pass(
+  const severity = severityFromCorroboration(maxScore, corroborating);
+  const reason = reasonFromVector({ pointer, keyboard, form: { score: 0, flags: [] }, session, cdp: { score: 0, flags: [] } }, allFlags);
+
+  return finding(
+    severity,
     'interaction',
     'suspicious-client-side-behavior',
     'interaction',
-    'no-suspicious-behavior',
-    'No suspicious client-side behavior detected'
+    reason,
+    `Suspicious client-side behavior: ${allFlags.slice(0, 3).join(', ')}`,
+    {
+      dimensions: ['pointer', 'session', 'keyboard'].filter((_, i) => [pointer, session, keyboard][i].score >= 0.25),
+      behaviors: allFlags,
+      pointerScore: Math.round(pointer.score * 100) / 100,
+      sessionScore: Math.round(session.score * 100) / 100,
+      keyboardScore: Math.round(keyboard.score * 100) / 100,
+    }
   );
 }
 
@@ -554,10 +480,7 @@ export function analyzeSuperHumanSpeed(): DetectionResult {
     );
   }
 
-  const totalTime = tracking.submitTime - tracking.firstFocusTime;
-  const keystrokes = tracking.totalKeystrokes;
-
-  if (keystrokes === 0) {
+  if (tracking.totalKeystrokes === 0) {
     return pass(
       'interaction',
       'super-human-speed',
@@ -567,75 +490,47 @@ export function analyzeSuperHumanSpeed(): DetectionResult {
     );
   }
 
-  const cps = keystrokes / (totalTime / 1000);
+  const keyboard = extractKeyboardFeatures(tracking);
 
-  if (cps > 15) {
-    return finding(
-      'strong',
+  if (keyboard.score < 0.25) {
+    return pass(
       'interaction',
       'super-human-speed',
       'interaction',
-      'super-human-typing',
-      `Typing speed ${cps.toFixed(1)} CPS exceeds human limit (15 CPS)`,
-      { charsPerSecond: cps.toFixed(1), totalTime, keystrokes, threshold: 15 }
+      'normal-typing-speed',
+      'Typing speed is within human range'
     );
   }
 
-  if (totalTime < 500 && keystrokes > 5) {
-    return finding(
-      'medium',
-      'interaction',
-      'super-human-speed',
-      'interaction',
-      'too-fast-completion',
-      `Form completed in ${totalTime}ms - too fast for human input`,
-      { charsPerSecond: cps.toFixed(1), totalTime, keystrokes }
-    );
-  }
+  const totalTime = tracking.submitTime - tracking.firstFocusTime;
+  const cps = tracking.totalKeystrokes / (totalTime / 1000);
+  const severity = keyboard.score >= 0.8 ? 'strong' : keyboard.score >= 0.5 ? 'medium' : 'weak';
 
-  return pass(
+  return finding(
+    severity,
     'interaction',
     'super-human-speed',
     'interaction',
-    'normal-typing-speed',
-    'Typing speed is within human range'
+    keyboard.flags[0] ?? 'super-human-typing',
+    `Typing speed ${cps.toFixed(1)} CPS with ${keyboard.flags.join(', ')}`,
+    {
+      charsPerSecond: cps.toFixed(1),
+      totalTime,
+      keystrokes: tracking.totalKeystrokes,
+      keyboardScore: Math.round(keyboard.score * 100) / 100,
+      flags: keyboard.flags,
+    }
   );
 }
 
 export function analyzeAdvancedInteractionSignals(): DetectionResult {
-  const signals: string[] = [];
+  const pointer = extractPointerFeatures(tracking);
+  const keyboard = extractKeyboardFeatures(tracking);
+  const session = extractSessionFeatures(tracking);
 
-  if (tracking.hasUntrustedEvent) {
-    signals.push('untrustedEvent');
-  }
+  const allFlags = [...pointer.flags, ...keyboard.flags, ...session.flags];
 
-  if (tracking.clicksAtZero > 0) {
-    signals.push('zeroCoordinateClick');
-  }
-
-  const totalClicks = tracking.mouseEvents.filter(e => e.type === 'down').length;
-  if (totalClicks >= 2 && tracking.clicksAtExactCenter >= totalClicks * 0.8) {
-    signals.push('exactCenterClicks');
-  }
-
-  if (tracking.suspiciousKeyEvents > 0) {
-    signals.push('syntheticKeyEvents');
-  }
-
-  if (tracking.keystrokeTimes.length >= 5) {
-    const intervals: number[] = [];
-    for (let i = 1; i < tracking.keystrokeTimes.length; i++) {
-      intervals.push(tracking.keystrokeTimes[i] - tracking.keystrokeTimes[i - 1]);
-    }
-    const avg = intervals.reduce((a, b) => a + b, 0) / intervals.length;
-    const stdDev = Math.sqrt(intervals.reduce((acc, v) => acc + Math.pow(v - avg, 2), 0) / intervals.length);
-
-    if (stdDev < 10 && avg < 100) {
-      signals.push('uniformKeystrokeTiming');
-    }
-  }
-
-  if (signals.length === 0) {
+  if (allFlags.length === 0) {
     return pass(
       'interaction',
       'advanced-bot-signals',
@@ -645,19 +540,25 @@ export function analyzeAdvancedInteractionSignals(): DetectionResult {
     );
   }
 
+  const corroborating = [pointer, keyboard, session].filter(d => d.score >= 0.25).length;
+  const maxScore = Math.max(pointer.score, keyboard.score, session.score);
+  const severity = severityFromCorroboration(maxScore, corroborating);
+
   return finding(
-    'medium',
+    severity,
     'interaction',
     'advanced-bot-signals',
     'interaction',
     'advanced-bot-signals',
-    `Advanced interaction bot signals: ${signals.join(', ')}`,
-    { signals }
+    `Advanced interaction bot signals: ${allFlags.slice(0, 3).join(', ')}`,
+    { signals: allFlags }
   );
 }
 
 export function analyzeCDPMouseLeak(): DetectionResult {
-  if (tracking.mouseEvents.length < 20) {
+  const cdp = extractCDPFeatures(tracking);
+
+  if (cdp.flags.includes('insufficientMouseData')) {
     return pass(
       'cdp',
       'cdp:mouse-leak',
@@ -667,9 +568,7 @@ export function analyzeCDPMouseLeak(): DetectionResult {
     );
   }
 
-  const suspiciousChecks = tracking.cdpLeakChecks.filter(result => (result as CDPCheckResult).suspicious === true);
-
-  if (suspiciousChecks.length === 0) {
+  if (cdp.score === 0) {
     return pass(
       'cdp',
       'cdp:mouse-leak',
@@ -679,35 +578,28 @@ export function analyzeCDPMouseLeak(): DetectionResult {
     );
   }
 
+  const suspiciousChecks = tracking.cdpLeakChecks.filter(result => (result as CDPCheckResult).suspicious === true);
   const totalChecks = tracking.cdpLeakChecks.length;
-  const ratio = suspiciousChecks.length / totalChecks;
+  const ratio = totalChecks > 0 ? suspiciousChecks.length / totalChecks : 0;
 
   const windowScreenX = typeof window.screenX !== 'undefined' ? window.screenX : window.screenLeft || 0;
   const windowScreenY = typeof window.screenY !== 'undefined' ? window.screenY : window.screenTop || 0;
 
-  if (ratio > 0.8 && totalChecks > 20) {
-    return finding(
-      'medium',
-      'cdp',
-      'cdp:mouse-leak',
-      'interaction',
-      'cdp-screen-offset-bug',
-      `${(ratio * 100).toFixed(0)}% events show CDP screen coordinate bug (screenX === clientX with window offset)`,
-      {
-        cdpPatternRatio: ratio.toFixed(2),
-        totalEvents: tracking.mouseEvents.filter(e => e.type === 'move').length,
-        suspiciousChecks: suspiciousChecks.length,
-        totalChecks,
-        windowPosition: { x: windowScreenX, y: windowScreenY },
-      }
-    );
-  }
+  const severity = cdp.score >= 0.8 ? 'medium' : 'weak';
 
-  return pass(
+  return finding(
+    severity,
     'cdp',
     'cdp:mouse-leak',
     'interaction',
-    'insufficient-cdp-pattern',
-    'Some screen coordinate anomalies but below CDP leak threshold'
+    'cdp-screen-offset-bug',
+    `${(ratio * 100).toFixed(0)}% events show CDP screen coordinate bug (screenX === clientX with window offset)`,
+    {
+      cdpPatternRatio: ratio.toFixed(2),
+      totalEvents: tracking.mouseEvents.filter(e => e.type === 'move').length,
+      suspiciousChecks: suspiciousChecks.length,
+      totalChecks,
+      windowPosition: { x: windowScreenX, y: windowScreenY },
+    }
   );
 }

@@ -487,6 +487,43 @@ button:disabled {
     to { transform: rotate(360deg); }
 }
 
+/* Challenge mode summary */
+.challenge-summary {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+}
+
+.challenge-summary th,
+.challenge-summary td {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.challenge-summary th {
+    color: var(--text-secondary);
+    width: 40%;
+}
+
+.risk-low { color: var(--accent-success); }
+.risk-medium { color: var(--accent-warning); }
+.risk-high { color: #ffa657; }
+.risk-confirmed { color: var(--accent-danger); font-weight: 600; }
+
+.challenge-token {
+    background-color: var(--bg-tertiary);
+    padding: 1rem;
+    border-radius: 6px;
+    word-break: break-all;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    max-height: 160px;
+    overflow-y: auto;
+}
+
 /* Responsive */
 @media (max-width: 600px) {
     .container {

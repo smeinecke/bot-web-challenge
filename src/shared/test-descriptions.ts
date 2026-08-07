@@ -89,6 +89,9 @@ export const TEST_DESCRIPTIONS: Record<string, string> = {
   hasBlobIframeCDPIssue:
     'Creates a blob-URL iframe and compares navigator properties (webdriver, userAgent, languages, chrome object) between the main frame and the isolated iframe. Mismatches reveal CDP or anti-detection manipulation.',
 
+  hasCrossRealmInconsistency:
+    'Collects the same set of observations from the main window, a same-origin iframe, a blob-URL iframe, and a Web Worker, then compares values, property descriptors, and prototype tags. Inconsistencies across realms suggest an environment that patched individual properties but failed to keep the fake state coherent everywhere.',
+
   hasSuspiciousWeakSignals:
     'Collects minor anomalies: missing devicePixelRatio, empty vendor on Chrome, forced navigator.webdriver=false, and tampered Function.prototype.toString. Two or more weak signals together raise suspicion.',
 

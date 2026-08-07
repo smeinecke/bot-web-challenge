@@ -1,7 +1,6 @@
 /**
  * Web Worker based detection checks
  */
-import type { DetectionSeverity } from './detector-types';
 
 export interface WorkerResults {
   userAgent: string;
@@ -35,6 +34,11 @@ export function runWorkerTests(): Promise<WorkerResults> {
 
   workerTestsPromise = new Promise((resolve) => {
     try {
+      if (typeof Worker === 'undefined' || typeof Blob === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL) {
+        resolve({ notSupported: true } as WorkerResults);
+        return;
+      }
+
       const workerCode = `
         self.onmessage = function(e) {
           const results = {
@@ -121,31 +125,31 @@ export function runWorkerTests(): Promise<WorkerResults> {
 }
 
 /**
- * Compare main context vs worker context values
- * Returns inconclusive status for worker errors/timeouts
+ * Evaluate worker consistency using already-collected worker data.
+ * A failed worker measurement must be `inconclusive`, never `false`/pass.
  */
-export async function checkInconsistentWorkerValues(): Promise<Record<string, unknown> | false> {
-  const workerData = await runWorkerTests();
-
+export function evaluateWorkerConsistency(workerData: WorkerResults): Record<string, unknown> | false {
   if (workerData.error) {
     return {
-      reason: 'workerError',
       inconclusive: true,
-      severity: 'weak' as DetectionSeverity,
+      reason: 'workerError',
       message: workerData.error,
       description: 'Web Worker failed to execute — inconclusive, may be browser restrictions'
     };
   }
 
   if (workerData.notSupported) {
-    return false;
+    return {
+      inconclusive: true,
+      reason: 'workerUnsupported',
+      description: 'Web Workers not supported — cannot compare main/worker context values'
+    };
   }
 
   if (workerData.timeout) {
     return {
-      reason: 'workerTimeout',
       inconclusive: true,
-      severity: 'weak' as DetectionSeverity,
+      reason: 'workerTimeout',
       description: 'Web Worker timed out — inconclusive, may be browser restrictions or slow device'
     };
   }
@@ -203,19 +207,33 @@ export async function checkInconsistentWorkerValues(): Promise<Record<string, un
 }
 
 /**
- * Check CDP in Web Worker — combines marker check and prepareStackTrace trap
- * Returns structured findings with severity based on detection source
+ * Compare main context vs worker context values.
+ * A failed worker measurement is reported as `inconclusive`, not as a pass.
  */
-export async function checkAutomatedWithCDPInWorker(): Promise<Record<string, unknown> | false> {
-  const workerData = await runWorkerTests();
+export async function checkInconsistentWorkerValues(): Promise<Record<string, unknown> | false> {
+  return evaluateWorkerConsistency(await runWorkerTests());
+}
 
+/**
+ * Evaluate CDP detection using already-collected worker data.
+ * A failed worker measurement must be `inconclusive`, never `false`/pass.
+ */
+export function evaluateWorkerCDP(workerData: WorkerResults): Record<string, unknown> | false {
   if (workerData.error || workerData.timeout || workerData.notSupported) {
-    return false;
+    return {
+      inconclusive: true,
+      reason: workerData.timeout ? 'workerTimeout' : workerData.error ? 'workerError' : 'workerUnsupported',
+      description: workerData.timeout
+        ? 'Web Worker timed out before CDP check could complete'
+        : workerData.error
+          ? `Web Worker error during CDP check: ${workerData.error}`
+          : 'Web Workers not supported — cannot run CDP check in worker',
+    };
   }
 
   if (workerData.hasCDP === true || workerData.hasCDPWorker === true) {
     const reason = workerData.hasCDP ? 'workerCDPMarker' : 'workerStackTraceSideEffect';
-    const severity: DetectionSeverity = workerData.hasCDP ? 'strong' : 'medium';
+    const severity: 'strong' | 'medium' = workerData.hasCDP ? 'strong' : 'medium';
     const description = workerData.hasCDP
       ? 'CDP marker found in worker context'
       : 'Worker Error.prepareStackTrace side effect suggests CDP inspection';
@@ -224,4 +242,12 @@ export async function checkAutomatedWithCDPInWorker(): Promise<Record<string, un
   }
 
   return false;
+}
+
+/**
+ * Check CDP in Web Worker — combines marker check and prepareStackTrace trap.
+ * A failed worker measurement is reported as `inconclusive`, not as a pass.
+ */
+export async function checkAutomatedWithCDPInWorker(): Promise<Record<string, unknown> | false> {
+  return evaluateWorkerCDP(await runWorkerTests());
 }

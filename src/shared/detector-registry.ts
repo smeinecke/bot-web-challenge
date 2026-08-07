@@ -20,6 +20,7 @@ import { finding, inconclusive, pass } from './detector-types';
 import * as browserChecks from './browser-checks';
 import * as workerChecks from './worker-checks';
 import * as interactionChecks from './interaction-checks';
+import * as crossRealm from './cross-realm';
 
 export interface DetectorRegistryEntry {
   id: string;
@@ -827,6 +828,18 @@ const STATIC_REGISTRY: DetectorRegistryEntry[] = [
     description: 'CDP/automation leaks across blob URL iframe',
     defaultSeverity: 'medium',
     run: () => browserChecks.checkBlobIframeCDP(),
+  },
+  {
+    id: 'hasCrossRealmInconsistency',
+    artifactId: 'cross-realm:consistency',
+    category: 'browser-integrity',
+    context: 'main',
+    critical: true,
+    isAsync: true,
+    timeoutMs: 6000,
+    description: 'Cross-realm consistency between main, iframe, blob iframe, and worker',
+    defaultSeverity: 'medium',
+    run: () => crossRealm.runCrossRealmConsistency().then(crossRealm.crossRealmMismatchesToFindings),
   },
   {
     id: 'hasSuspiciousWeakSignals',

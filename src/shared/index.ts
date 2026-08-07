@@ -11,3 +11,5 @@ export * from './worker-checks';
 export * from './test-descriptions';
 export * from './detector-registry';
 export * from './interaction-checks';
+export * from './challenge';
+export * from './cross-realm';

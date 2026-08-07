@@ -138,6 +138,21 @@ describe('evidence-fusion scoring', () => {
     expect(scoring.summary.criticalChecksTotal).toBe(1);
     expect(scoring.summary.criticalChecksInconclusive).toBe(1);
     expect(scoring.summary.coverage).toBe(0);
-    expect(scoring.summary.verdict).toBe('suspicious');
+    // A failed critical check must surface as reduced coverage (unknown),
+    // not be obscured by a weaker unrelated finding (suspicious).
+    expect(scoring.summary.verdict).toBe('unknown');
+    expect(scoring.summary.risk).toBe('medium');
+    expect(scoring.summary.confidence).toBeLessThan(1);
+  });
+
+  it('risk is low and confidence is high when all critical checks pass and no evidence is found', () => {
+    const findings = [
+      f({ ...pass('webdriver', 'webdriver:true', 'main', 'no-finding', 'No webdriver'), critical: true }),
+      f({ ...pass('cdp', 'cdp:selenium-default', 'main', 'no-finding', 'No CDP'), critical: true }),
+    ];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.risk).toBe('low');
+    expect(scoring.summary.confidence).toBe(1);
+    expect(scoring.summary.coverage).toBe(100);
   });
 });
