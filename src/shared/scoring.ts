@@ -227,29 +227,38 @@ function decideVerdict(
     };
   }
 
-  // 7. Suspicious: at least one independent finding but not enough for bot.
-  if (mediumPlusCategories.length === 1 || weakCategories.length >= 1 || displayScore >= 0.5) {
+  // 7. Suspicious: a single medium category, or weak findings from at least two
+  //    independent categories, or one medium category plus any weak corroboration.
+  if (mediumPlusCategories.length === 1) {
     return {
       verdict: 'suspicious',
-      rule: `single-category-suspicious:${categoryEvidence.map(c => c.category).join(',') || 'none'}`,
+      rule: `single-medium-category:${mediumPlusCategories.map(c => c.category).join(',')}`,
       score: displayScore,
       displayScore: displayScore,
     };
   }
 
-  // 8. No evidence of automation.
+  if (weakCategories.length >= 2) {
+    return {
+      verdict: 'suspicious',
+      rule: `two-weak-categories:${weakCategories.map(w => w.category).join(',')}`,
+      score: displayScore,
+      displayScore: displayScore,
+    };
+  }
+
+  // 8. No evidence of automation (a single weak finding is not enough).
   return {
     verdict: 'human',
     rule: 'no-automation-evidence',
-    score: 0,
+    score: displayScore,
     displayScore,
   };
 }
 
 function computeRisk(
   verdict: 'human' | 'suspicious' | 'bot' | 'unknown',
-  scoredArtifacts: DetectionResult[],
-  displayScore: number
+  scoredArtifacts: DetectionResult[]
 ): DetectionRisk {
   const evidence = scoredArtifacts.filter(a => a.status === 'finding' && a.severity !== 'info');
   const hasHard = evidence.some(a => a.severity === 'hard');
@@ -259,7 +268,11 @@ function computeRisk(
     return hasHard ? 'confirmed' : 'high';
   }
 
-  if (evidence.length > 0 || displayScore >= 0.5) {
+  if (verdict === 'unknown') {
+    return 'medium';
+  }
+
+  if (verdict === 'suspicious') {
     return 'medium';
   }
 
@@ -377,7 +390,7 @@ export function summarizeResults(
   ).length;
   const independentCategoryCount = categoryEvidence.length;
 
-  const risk = computeRisk(verdict, scoredArtifacts, displayScore);
+  const risk = computeRisk(verdict, scoredArtifacts);
   const confidence = computeConfidence(displayScore, coverage);
 
   const summary: DetectorSummary = {

@@ -1113,8 +1113,8 @@ export function checkPluginsMimeTypes(): Record<string, unknown> | false {
 }
 
 /** Check locale, timezone, and Intl coherence */
-export function checkLocaleTimezoneIntl(): Record<string, unknown> | false {
-  const issues: string[] = [];
+export function checkLocaleTimezoneIntl(): DetectionResult[] | false {
+  const findings: DetectionResult[] = [];
 
   try {
     const dtf = Intl.DateTimeFormat().resolvedOptions();
@@ -1124,40 +1124,87 @@ export function checkLocaleTimezoneIntl(): Record<string, unknown> | false {
     const locale = dtf.locale;
 
     const navLang = (navigator.language || '').toLowerCase();
+    const langs = navigator.languages || [];
+
+    // A different default Intl locale is common on Linux and not a reliable
+    // browser invariant by itself. Keep it as diagnostic telemetry only.
     if (locale && !locale.toLowerCase().startsWith(navLang.split('-')[0])) {
-      issues.push('intlLocaleMismatch');
+      findings.push(
+        finding(
+          'info',
+          'browser-integrity',
+          'locale:diagnostic',
+          'main',
+          'intl-locale-mismatch',
+          'Default Intl locale differs from navigator.language (diagnostic)',
+          { intlLocale: locale, navLanguage: navLang }
+        )
+      );
     }
 
     const isEn = navLang.startsWith('en');
     if (!isEn && (tz === 'UTC' || tz === 'GMT' || tz === 'Etc/UTC')) {
-      issues.push('nonEnglishBrowserInUTC');
+      findings.push(
+        finding(
+          'weak',
+          'browser-integrity',
+          'locale:incoherence',
+          'main',
+          'non-english-browser-in-utc',
+          'Non-English browser reports UTC as default timezone',
+          { timezone: tz, navLanguage: navLang }
+        )
+      );
     }
 
-    const langs = navigator.languages || [];
-    if (langs.length > 0 && !langs.some(l => l.toLowerCase().startsWith(navLang.split('-')[0]))) {
-      issues.push('languagesListMismatch');
+    if (langs.length > 0 && !langs.some((l) => l.toLowerCase().startsWith(navLang.split('-')[0]))) {
+      findings.push(
+        finding(
+          'weak',
+          'browser-integrity',
+          'locale:incoherence',
+          'main',
+          'languages-list-mismatch',
+          'navigator.language is not present in navigator.languages',
+          { navLanguage: navLang, languages: langs }
+        )
+      );
     }
 
     const nfLocale = nf.locale || '';
     const collLocale = coll.locale || '';
     if (locale && nfLocale && locale !== nfLocale) {
-      issues.push('intlLocaleInconsistent');
+      findings.push(
+        finding(
+          'weak',
+          'browser-integrity',
+          'locale:incoherence',
+          'main',
+          'intl-date-number-locale-inconsistent',
+          'Intl.DateTimeFormat and Intl.NumberFormat report different default locales',
+          { dateTimeLocale: locale, numberLocale: nfLocale }
+        )
+      );
     }
     if (locale && collLocale && locale !== collLocale) {
-      issues.push('intlCollatorLocaleInconsistent');
+      findings.push(
+        finding(
+          'weak',
+          'browser-integrity',
+          'locale:incoherence',
+          'main',
+          'intl-date-collator-locale-inconsistent',
+          'Intl.DateTimeFormat and Intl.Collator report different default locales',
+          { dateTimeLocale: locale, collatorLocale: collLocale }
+        )
+      );
     }
   } catch {
     // Intl not supported
   }
 
-  if (issues.length > 0) {
-    return {
-      issues,
-      weak: true,
-      description: `Locale/timezone/Intl coherence issues: ${issues.join(', ')}`
-    };
-  }
-  return false;
+  if (findings.length === 0) return false;
+  return findings;
 }
 
 /** Check viewport, screen, DPR, and orientation coherence */
@@ -1443,78 +1490,87 @@ interface RuntimeAPIEntry {
   fn: () => unknown;
 }
 
-function buildRuntimeAPIEntries(): RuntimeAPIEntry[] {
+function buildRuntimeAPIEntries(root: Record<string, unknown>): RuntimeAPIEntry[] {
   const entries: RuntimeAPIEntry[] = [];
 
-  entries.push({ id: 'console.log', obj: console as unknown as object, prop: 'log', fn: () => (console as unknown as Record<string, unknown>).log });
-
-  if (typeof window !== 'undefined') {
-    entries.push({ id: 'window.Worker', obj: window, prop: 'Worker', fn: () => window.Worker });
+  const console = root.console as Record<string, unknown> | undefined;
+  if (console) {
+    entries.push({ id: 'console.log', obj: console, prop: 'log', fn: () => console.log });
   }
 
-  if (navigator.permissions) {
-    entries.push({
-      id: 'navigator.permissions.query',
-      obj: navigator.permissions as unknown as object,
-      prop: 'query',
-      fn: () => navigator.permissions.query,
-    });
+  if (root.Worker) {
+    entries.push({ id: 'window.Worker', obj: root, prop: 'Worker', fn: () => root.Worker });
   }
 
-  if (navigator.mediaDevices) {
-    entries.push({
-      id: 'navigator.mediaDevices.enumerateDevices',
-      obj: navigator.mediaDevices as unknown as object,
-      prop: 'enumerateDevices',
-      fn: () => navigator.mediaDevices.enumerateDevices,
-    });
+  const nav = root.navigator as Record<string, unknown> | undefined;
+  if (nav) {
+    const permissions = nav.permissions as Record<string, unknown> | undefined;
+    if (permissions && typeof permissions.query === 'function') {
+      entries.push({
+        id: 'navigator.permissions.query',
+        obj: permissions,
+        prop: 'query',
+        fn: () => permissions.query,
+      });
+    }
+    const mediaDevices = nav.mediaDevices as Record<string, unknown> | undefined;
+    if (mediaDevices && typeof mediaDevices.enumerateDevices === 'function') {
+      entries.push({
+        id: 'navigator.mediaDevices.enumerateDevices',
+        obj: mediaDevices,
+        prop: 'enumerateDevices',
+        fn: () => mediaDevices.enumerateDevices,
+      });
+    }
   }
 
-  const speechSynth = typeof window !== 'undefined' ? window.speechSynthesis : (typeof speechSynthesis !== 'undefined' ? speechSynthesis : undefined);
-  if (speechSynth) {
+  const speechSynth = root.speechSynthesis as Record<string, unknown> | undefined;
+  if (speechSynth && typeof speechSynth.getVoices === 'function') {
     entries.push({
       id: 'speechSynthesis.getVoices',
-      obj: speechSynth as unknown as object,
+      obj: speechSynth,
       prop: 'getVoices',
       fn: () => speechSynth.getVoices,
     });
   }
 
-  if (typeof WebGLRenderingContext !== 'undefined') {
+  const webgl = root.WebGLRenderingContext as { prototype?: Record<string, unknown> } | undefined;
+  if (webgl?.prototype && typeof webgl.prototype.getParameter === 'function') {
     entries.push({
       id: 'WebGLRenderingContext.prototype.getParameter',
-      obj: WebGLRenderingContext.prototype as unknown as object,
+      obj: webgl.prototype as unknown as object,
       prop: 'getParameter',
-      fn: () => WebGLRenderingContext.prototype.getParameter,
+      fn: () => webgl.prototype?.getParameter,
     });
   }
 
-  if (typeof WebGL2RenderingContext !== 'undefined') {
+  const webgl2 = root.WebGL2RenderingContext as { prototype?: Record<string, unknown> } | undefined;
+  if (webgl2?.prototype && typeof webgl2.prototype.getParameter === 'function') {
     entries.push({
       id: 'WebGL2RenderingContext.prototype.getParameter',
-      obj: WebGL2RenderingContext.prototype as unknown as object,
+      obj: webgl2.prototype as unknown as object,
       prop: 'getParameter',
-      fn: () => WebGL2RenderingContext.prototype.getParameter,
+      fn: () => webgl2.prototype?.getParameter,
     });
   }
 
-  if (typeof Navigator !== 'undefined') {
+  const Nav = root.Navigator as { prototype?: Record<string, unknown> } | undefined;
+  if (Nav?.prototype) {
     entries.push({
       id: 'Navigator.prototype.userAgentData',
-      obj: Navigator.prototype as unknown as object,
+      obj: Nav.prototype as unknown as object,
       prop: 'userAgentData',
-      fn: () => Object.getOwnPropertyDescriptor(Navigator.prototype, 'userAgentData')?.get,
+      fn: () => Object.getOwnPropertyDescriptor(Nav.prototype, 'userAgentData')?.get,
     });
   }
 
   return entries;
 }
 
-/** Check runtime API integrity across multiple browser APIs */
-export function checkRuntimeAPIIntegrity(): Record<string, unknown> | false {
+function inspectRuntimeAPIs(root: Record<string, unknown>): RuntimeAPIModification[] {
   const suspicious: RuntimeAPIModification[] = [];
 
-  for (const entry of buildRuntimeAPIEntries()) {
+  for (const entry of buildRuntimeAPIEntries(root)) {
     try {
       const fn = entry.fn();
       if (typeof fn !== 'function') continue;
@@ -1541,19 +1597,107 @@ export function checkRuntimeAPIIntegrity(): Record<string, unknown> | false {
     }
   }
 
-  if (suspicious.length === 0) return false;
+  return suspicious;
+}
 
-  const severity: 'medium' | 'strong' | 'hard' =
-    suspicious.length === 1 ? 'medium' : suspicious.length === 2 ? 'strong' : 'hard';
+/**
+ * Check runtime API integrity by comparing the main realm against a pristine
+ * same-origin about:blank iframe.
+ *
+ * APIs that are only modified in the main realm are treated as page-local
+ * instrumentation (info, not scored). APIs that are modified in the pristine
+ * iframe, or in both realms, are genuine runtime-tampering evidence.
+ */
+export function checkRuntimeAPIIntegrity(): Promise<Record<string, unknown> | false> {
+  return new Promise((resolve) => {
+    let iframe: HTMLIFrameElement | null = null;
 
-  return {
-    artifactId: 'runtime-api:integrity',
-    category: 'api-integrity',
-    severity,
-    reason: 'runtime-api-tampering',
-    description: `${suspicious.length} browser runtime API(s) appear to be non-native: ${suspicious.map((s) => s.id).join(', ')}`,
-    modifiedAPIs: suspicious,
-  };
+    const cleanup = () => {
+      if (!iframe) return;
+      try {
+        document.body.removeChild(iframe);
+      } catch {}
+    };
+
+    try {
+      if (typeof document === 'undefined') {
+        resolve(false);
+        return;
+      }
+
+      iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = 'about:blank';
+      document.body.appendChild(iframe);
+
+      const win = iframe.contentWindow as Record<string, unknown> | null | undefined;
+      if (!win) {
+        cleanup();
+        resolve(false);
+        return;
+      }
+
+      const mainMods = inspectRuntimeAPIs(globalThis as Record<string, unknown>);
+      const iframeMods = inspectRuntimeAPIs(win);
+      cleanup();
+
+      const mainById = new Map(mainMods.map((m) => [m.id, m] as const));
+      const iframeById = new Map(iframeMods.map((m) => [m.id, m] as const));
+
+      const both: RuntimeAPIModification[] = [];
+      const mainOnly: RuntimeAPIModification[] = [];
+      const iframeOnly: RuntimeAPIModification[] = [];
+
+      for (const id of mainById.keys()) {
+        if (iframeById.has(id)) {
+          both.push(mainById.get(id)!);
+        } else {
+          mainOnly.push(mainById.get(id)!);
+        }
+      }
+      for (const id of iframeById.keys()) {
+        if (!mainById.has(id)) {
+          iframeOnly.push(iframeById.get(id)!);
+        }
+      }
+
+      if (both.length === 0 && iframeOnly.length === 0) {
+        if (mainOnly.length === 0) {
+          resolve(false);
+          return;
+        }
+        resolve({
+          artifactId: 'runtime-api:integrity',
+          category: 'api-integrity',
+          severity: 'info',
+          reason: 'runtime-api-main-only',
+          description: `${mainOnly.length} runtime API(s) are non-native only in the main realm (likely page-local instrumentation)`,
+          mainOnly,
+          iframeOnly: [],
+          both: [],
+        });
+        return;
+      }
+
+      const scoredCount = both.length + iframeOnly.length;
+      const severity: 'medium' | 'strong' | 'hard' =
+        scoredCount === 1 ? 'medium' : scoredCount === 2 ? 'strong' : 'hard';
+
+      resolve({
+        artifactId: 'runtime-api:integrity',
+        category: 'api-integrity',
+        severity,
+        reason: 'runtime-api-tampering',
+        description: `${scoredCount} runtime API(s) are non-native in a pristine same-origin iframe`,
+        both,
+        mainOnly,
+        iframeOnly,
+      });
+    } catch {
+      cleanup();
+      resolve(false);
+    }
+  });
 }
 
 /** Check MediaDeviceInfo object semantics */

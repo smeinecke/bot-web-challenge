@@ -93,11 +93,35 @@ describe('evidence-fusion scoring', () => {
     expect(scoring.summary.verdictRule).toContain('weak-corroboration');
   });
 
-  it('outer === inner is retained as weak evidence and cannot detect a bot alone', () => {
+  it('a single weak finding stays human with a low risk', () => {
     const findings = [f(finding('weak', 'environment', 'browser-chrome:outer-eq-inner', 'main', 'outer-eq-inner', 'outer === inner'))];
     const scoring = summarizeResults(rawBase, findings);
-    expect(scoring.summary.verdict).toBe('suspicious');
+    expect(scoring.summary.verdict).toBe('human');
+    expect(scoring.summary.risk).toBe('low');
+    expect(scoring.summary.weakFindings).toBe(1);
+    expect(scoring.summary.score).toBeGreaterThan(0);
     expect(scoring.summary.uniqueEvidenceCount).toBe(1);
+  });
+
+  it('two weak findings from the same category still do not reach suspicious', () => {
+    const findings = [
+      f(finding('weak', 'browser-integrity', 'browser-integrity:a', 'main', 'weak-a', 'Weak A')),
+      f(finding('weak', 'browser-integrity', 'browser-integrity:b', 'main', 'weak-b', 'Weak B')),
+    ];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.verdict).toBe('human');
+    expect(scoring.summary.independentCategoryCount).toBe(1);
+  });
+
+  it('two weak findings from independent categories are suspicious', () => {
+    const findings = [
+      f(finding('weak', 'browser-integrity', 'browser-integrity:a', 'main', 'weak-a', 'Weak A')),
+      f(finding('weak', 'environment', 'environment:b', 'main', 'weak-b', 'Weak B')),
+    ];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.verdict).toBe('suspicious');
+    expect(scoring.summary.risk).toBe('medium');
+    expect(scoring.summary.independentCategoryCount).toBe(2);
   });
 
   it('outer < inner remains strong', () => {

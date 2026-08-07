@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   checkWebdriverNull,
   checkPrepareStackTrace,
@@ -289,12 +289,75 @@ describe('browser checks', () => {
       }
     });
 
-    it('a single non-native runtime API is medium evidence', () => {
+    function makeNativeFn() {
+      return function native() { return '[native code]'; };
+    }
+
+    function makeNonNativeFn() {
+      return () => {};
+    }
+
+    function makeFakeWindow(modifiedIds: Set<string>) {
+      function apiFn(id: string) {
+        return modifiedIds.has(id) ? makeNonNativeFn() : makeNativeFn();
+      }
+      return {
+        console: { log: apiFn('console.log') },
+        Worker: apiFn('window.Worker'),
+        navigator: {},
+        speechSynthesis: undefined,
+        WebGLRenderingContext: undefined,
+        WebGL2RenderingContext: undefined,
+        Navigator: { prototype: {} },
+      } as Record<string, unknown>;
+    }
+
+    function withFakeIframe(fakeWindow: Record<string, unknown>) {
+      const realCreate = document.createElement.bind(document);
+      const realIframe = document.createElement('iframe') as HTMLIFrameElement & { contentWindow?: Record<string, unknown> };
+      Object.defineProperty(realIframe, 'contentWindow', {
+        get: () => fakeWindow,
+        configurable: true,
+      });
+
+      const spy = vi.spyOn(document, 'createElement').mockImplementation((tag: string) => {
+        if (tag === 'iframe') return realIframe;
+        return realCreate(tag);
+      });
+
+      return () => {
+        spy.mockRestore();
+      };
+    }
+
+    it('main-only non-native runtime API is informational, not scored', async () => {
       const original = console.log;
-      Object.defineProperty(console, 'log', { value: () => {}, configurable: true, writable: true });
+      Object.defineProperty(console, 'log', { value: makeNonNativeFn(), configurable: true, writable: true });
+      const fakeWindow = makeFakeWindow(new Set());
+      const cleanup = withFakeIframe(fakeWindow);
 
       try {
-        const result = checkRuntimeAPIIntegrity();
+        const result = await checkRuntimeAPIIntegrity();
+        expect(result).not.toBe(false);
+        if (result !== false) {
+          expect(result.severity).toBe('info');
+          expect(result.artifactId).toBe('runtime-api:integrity');
+          expect((result.mainOnly as Array<{ id: string }>).length).toBeGreaterThanOrEqual(1);
+        }
+      } finally {
+        Object.defineProperty(console, 'log', { value: original, configurable: true, writable: true });
+        cleanup();
+      }
+    });
+
+    it('a non-native API in both main and pristine iframe is medium evidence', async () => {
+      const original = console.log;
+      Object.defineProperty(console, 'log', { value: makeNonNativeFn(), configurable: true, writable: true });
+      const fakeWindow = makeFakeWindow(new Set(['console.log']));
+      const cleanup = withFakeIframe(fakeWindow);
+
+      try {
+        const result = await checkRuntimeAPIIntegrity();
         expect(result).not.toBe(false);
         if (result !== false) {
           expect(result.severity).toBe('medium');
@@ -302,21 +365,24 @@ describe('browser checks', () => {
         }
       } finally {
         Object.defineProperty(console, 'log', { value: original, configurable: true, writable: true });
+        cleanup();
       }
     });
 
-    it('two independent non-native browser APIs escalate to strong', () => {
+    it('two independent non-native APIs in the pristine iframe escalate to strong', async () => {
       const originalLog = console.log;
       const originalWorker = window.Worker;
-      Object.defineProperty(console, 'log', { value: () => {}, configurable: true, writable: true });
+      Object.defineProperty(console, 'log', { value: makeNonNativeFn(), configurable: true, writable: true });
       (window as Record<string, unknown>).Worker = function FakeWorker() {} as unknown as typeof Worker;
+      const fakeWindow = makeFakeWindow(new Set(['console.log', 'window.Worker']));
+      const cleanup = withFakeIframe(fakeWindow);
 
       try {
-        const result = checkRuntimeAPIIntegrity();
+        const result = await checkRuntimeAPIIntegrity();
         expect(result).not.toBe(false);
         if (result !== false) {
           expect(result.severity).toBe('strong');
-          expect((result.modifiedAPIs as Array<{ id: string }>).length).toBeGreaterThanOrEqual(2);
+          expect((result.both as Array<{ id: string }>).length).toBeGreaterThanOrEqual(2);
         }
       } finally {
         Object.defineProperty(console, 'log', { value: originalLog, configurable: true, writable: true });
@@ -325,6 +391,23 @@ describe('browser checks', () => {
         } else {
           delete (window as Record<string, unknown>).Worker;
         }
+        cleanup();
+      }
+    });
+
+    it('a non-native API only in the pristine iframe is a realm mismatch finding', async () => {
+      const fakeWindow = makeFakeWindow(new Set(['console.log']));
+      const cleanup = withFakeIframe(fakeWindow);
+
+      try {
+        const result = await checkRuntimeAPIIntegrity();
+        expect(result).not.toBe(false);
+        if (result !== false) {
+          expect(result.severity).toBe('medium');
+          expect((result.iframeOnly as Array<{ id: string }>).length).toBeGreaterThanOrEqual(1);
+        }
+      } finally {
+        cleanup();
       }
     });
   });

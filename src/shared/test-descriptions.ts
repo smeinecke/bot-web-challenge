@@ -96,7 +96,7 @@ export const TEST_DESCRIPTIONS: Record<string, string> = {
     'Creates a synthetic JavaScript Event and dispatches it on an isolated EventTarget. A script-created event must always have isTrusted === false. If the constructed or dispatched event reports isTrusted === true, the browser is violating a standards-level invariant.',
 
   hasRuntimeAPIIntegrityViolation:
-    'Inspects a set of core browser runtime APIs (console.log, window.Worker, navigator.permissions.query, navigator.mediaDevices.enumerateDevices, speechSynthesis.getVoices, WebGL getParameter, WebGL2 getParameter, and the Navigator.prototype.userAgentData getter) using Function.prototype.toString and property descriptors. A single non-native API is medium evidence; two independent non-native APIs are strong; three or more are hard. Missing or unsupported APIs are not suspicious.',
+    'Inspects a set of core browser runtime APIs in the main realm and a pristine same-origin about:blank iframe (console.log, window.Worker, navigator.permissions.query, navigator.mediaDevices.enumerateDevices, speechSynthesis.getVoices, WebGL getParameter, WebGL2 getParameter, and the Navigator.prototype.userAgentData getter). APIs that are only non-native in the main realm are page-local instrumentation and reported as info. APIs that are non-native in the pristine iframe are genuine runtime-tampering evidence: one is medium, two are strong, three or more are hard. Missing or unsupported APIs are not suspicious.',
 
   hasMediaDeviceInfoIntegrity:
     'Queries navigator.mediaDevices.enumerateDevices() and checks whether returned entries structurally resemble native MediaDeviceInfo objects (prototype tag, constructor name, toJSON method). An empty list is not suspicious; permission-denied or unsupported mediaDevices is N/A.',
@@ -117,7 +117,7 @@ export const TEST_DESCRIPTIONS: Record<string, string> = {
     'Validates navigator.plugins and navigator.mimeTypes on desktop Chrome. Zero plugins, patched getters, or mismatched prototype tags are signs of incognito/headless/privacy modes.',
 
   hasLocaleTimezoneIntlIssue:
-    'Compares Intl.DateTimeFormat locale, timezone, navigator.language, and navigator.languages. Mismatches or a non-English browser in UTC suggest locale spoofing or misconfiguration.',
+    'Compares Intl.DateTimeFormat locale, timezone, navigator.language, and navigator.languages. navigator.language not being in navigator.languages, or different default locales across Intl objects, are treated as weak findings. A default Intl locale that differs from navigator.language is treated as diagnostic info because it is common on Linux and not a reliable automation invariant by itself.',
 
   hasViewportScreenCoherenceIssue:
     'Checks screen orientation vs. dimensions, visual viewport scale, and inner vs. outer size ratios. Incoherent values reveal mobile emulation, RDP scaling, or headless sizing artifacts.',
