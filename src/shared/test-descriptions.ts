@@ -81,22 +81,37 @@ export const TEST_DESCRIPTIONS: Record<string, string> = {
     'Uses an OfflineAudioContext to render a short audio buffer and sums sample magnitudes. Headless/sandboxed environments often produce a silent or near-zero sum due to missing audio subsystem.',
 
   hasInconsistentWorkerValues:
-    'Spawns a Web Worker and compares its navigator values (userAgent, languages, platform, hardwareConcurrency) against the main thread. Differences indicate automation patching or anti-detection tampering.',
+    'Spawns a Web Worker and compares its navigator values (userAgent, webdriver, platform, hardwareConcurrency, languages, WebGL vendor/renderer) against the main thread. Differences indicate automation patching or anti-detection tampering. Failed worker creation, timeout, or unsupported workers are reported as inconclusive, never as a pass.',
 
   isAutomatedWithCDPInWebWorker:
-    'Runs inside a Web Worker to detect CDP automation markers that may be injected into worker globals by automation frameworks.',
+    'Runs inside a Web Worker to detect CDP automation markers that may be injected into worker globals by automation frameworks. Failed worker creation, timeout, or unsupported workers are reported as inconclusive, never as a pass.',
 
   hasBlobIframeCDPIssue:
-    'Creates a blob-URL iframe and compares navigator properties (webdriver, userAgent, languages, chrome object) between the main frame and the isolated iframe. Mismatches reveal CDP or anti-detection manipulation.',
+    'Creates a blob-URL iframe and compares navigator properties (webdriver, userAgent, languages, chrome object) between the main frame and the isolated iframe. Mismatches reveal CDP or anti-detection manipulation. Iframe load errors, access failures, and timeouts are reported as inconclusive, not as a pass.',
 
   hasCrossRealmInconsistency:
-    'Collects the same set of observations from the main window, a same-origin iframe, a blob-URL iframe, and a Web Worker, then compares values, property descriptors, and prototype tags. Inconsistencies across realms suggest an environment that patched individual properties but failed to keep the fake state coherent everywhere.',
+    'Collects the same set of observations from the main window, a same-origin iframe, a blob-URL iframe, a Web Worker, and a SharedWorker when available, then compares values, property descriptors, and prototype tags. Each probe declares the realms in which it is valid (e.g. screen and devicePixelRatio are window-only, WebGL uses OffscreenCanvas in workers). Inconsistencies across applicable realms suggest an environment that patched individual properties but failed to keep the fake state coherent everywhere. Probe evaluation errors in applicable realms are reported as inconclusive rather than a pass or mismatch.',
+
+  hasSyntheticEventTrustedInvariant:
+    'Creates a synthetic JavaScript Event and dispatches it on an isolated EventTarget. A script-created event must always have isTrusted === false. If the constructed or dispatched event reports isTrusted === true, the browser is violating a standards-level invariant.',
+
+  hasRuntimeAPIIntegrityViolation:
+    'Inspects a set of core browser runtime APIs (console.log, window.Worker, navigator.permissions.query, navigator.mediaDevices.enumerateDevices, speechSynthesis.getVoices, WebGL getParameter, WebGL2 getParameter, and the Navigator.prototype.userAgentData getter) using Function.prototype.toString and property descriptors. A single non-native API is medium evidence; two independent non-native APIs are strong; three or more are hard. Missing or unsupported APIs are not suspicious.',
+
+  hasMediaDeviceInfoIntegrity:
+    'Queries navigator.mediaDevices.enumerateDevices() and checks whether returned entries structurally resemble native MediaDeviceInfo objects (prototype tag, constructor name, toJSON method). An empty list is not suspicious; permission-denied or unsupported mediaDevices is N/A.',
+
+  hasHighEntropyClientHintsCoherence:
+    'Requests high-entropy User-Agent Client Hints (architecture, bitness, platformVersion, fullVersionList, model) and checks them for internal coherence against low-entropy Client Hints and the User-Agent string. Missing or withheld high-entropy hints are N/A, not bot evidence.',
+
+  hasWebGLWebGPUCoherence:
+    'Requests a WebGPU adapter and compares adapter.info with the unmasked WebGL vendor/renderer. Only a clear contradiction is reported (e.g. WebGL claims a physical GPU while WebGPU explicitly identifies a software/fallback adapter). Missing or redacted WebGPU information is not suspicious.',
 
   hasSuspiciousWeakSignals:
     'Collects minor anomalies: missing devicePixelRatio, empty vendor on Chrome, forced navigator.webdriver=false, and tampered Function.prototype.toString. Two or more weak signals together raise suspicion.',
 
   hasPermissionsInconsistency:
-    'Queries the Permissions API for notifications and compares it with Notification.permission. Mismatches can indicate patched permission states used by anti-detection extensions.',
+    'Queries the Permissions API for notifications and compares it with Notification.permission. Mismatches can indicate patched permission states used by anti-detection extensions. The structural integrity of the returned PermissionStatus object is also validated; a plain object literal containing only {state, onchange} is not considered a native PermissionStatus. Unsupported or blocked Permissions APIs are N/A, not bot evidence.',
 
   hasPluginsMimeTypesIssue:
     'Validates navigator.plugins and navigator.mimeTypes on desktop Chrome. Zero plugins, patched getters, or mismatched prototype tags are signs of incognito/headless/privacy modes.',

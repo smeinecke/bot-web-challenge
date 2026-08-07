@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest';
 import {
   DEFAULT_PROBES,
   collectMainObservations,
+  collectSharedWorkerObservations,
+  compareSnapshots,
   crossRealmMismatchesToFindings,
   type RealmSnapshot,
   type CrossRealmConsistencyResult,
+  type CrossRealmProbe,
 } from './cross-realm';
 
 const allSame: RealmSnapshot[] = [
@@ -65,5 +68,67 @@ describe('cross-realm consistency engine', () => {
     expect(mismatch).toBeDefined();
     expect(mismatch?.severity).toBe('strong');
     expect(mismatch?.status).toBe('finding');
+  });
+
+  it('does not treat a window-only probe mismatch when a worker simply lacks the API', () => {
+    const snapshots: RealmSnapshot[] = [
+      { realm: 'main', values: { 'navigator:userAgent': 'UA/1.0', 'screen:width': 1920, 'screen:height': 1080 } },
+      { realm: 'worker', values: { 'navigator:userAgent': 'UA/1.0' } },
+    ];
+    const { mismatches, probeErrors } = compareSnapshots(snapshots);
+    const screenMismatch = mismatches.find((m) => m.probe.id.startsWith('screen:'));
+    expect(screenMismatch).toBeUndefined();
+    expect(probeErrors).toHaveLength(0);
+  });
+
+  it('still detects a mismatch for a probe that is valid in both realms', () => {
+    const snapshots: RealmSnapshot[] = [
+      { realm: 'main', values: { 'navigator:userAgent': 'UA/1.0' } },
+      { realm: 'worker', values: { 'navigator:userAgent': 'Bot/1.0' } },
+    ];
+    const { mismatches, probeErrors } = compareSnapshots(snapshots);
+    expect(probeErrors).toHaveLength(0);
+    const uaMismatch = mismatches.find((m) => m.probe.id === 'navigator:userAgent');
+    expect(uaMismatch).toBeDefined();
+    expect(uaMismatch?.referenceValue).toBe('UA/1.0');
+    expect(uaMismatch?.otherValue).toBe('Bot/1.0');
+  });
+
+  it('turns a probe evaluation error in an applicable realm into inconclusive, not a pass', () => {
+    const snapshots: RealmSnapshot[] = [
+      { realm: 'main', values: { 'navigator:userAgent': 'UA/1.0' } },
+      { realm: 'worker', values: { 'navigator:userAgent': 'UA/1.0', 'webgl:vendorRenderer': { _error: 'OffscreenCanvas not supported' } } },
+    ];
+    const { mismatches, probeErrors } = compareSnapshots(snapshots);
+    expect(mismatches).toHaveLength(0);
+    const webglError = probeErrors.find((pe) => pe.probe.id === 'webgl:vendorRenderer' && pe.realm === 'worker');
+    expect(webglError).toBeDefined();
+
+    const result: CrossRealmConsistencyResult = { snapshots, mismatches, inconclusive: [], probeErrors };
+    const findings = crossRealmMismatchesToFindings(result);
+    const inconclusive = findings.find((f) => f.status === 'inconclusive' && f.context === 'worker');
+    expect(inconclusive).toBeDefined();
+  });
+
+  it('SharedWorker unsupported is not a bot finding', async () => {
+    const snapshot = await collectSharedWorkerObservations();
+    expect(snapshot.inconclusive).toBe(true);
+    expect(snapshot.realm).toBe('shared-worker');
+
+    const result: CrossRealmConsistencyResult = { snapshots: [snapshot], mismatches: [], inconclusive: [snapshot] };
+    const findings = crossRealmMismatchesToFindings(result);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].status).toBe('inconclusive');
+    expect(findings[0].artifactId).toBe('cross-realm:shared-worker');
+    expect(findings[0].context).toBe('shared-worker');
+  });
+
+  it('uses a realm-specific OffscreenCanvas expression for worker WebGL', () => {
+    const webglProbe = DEFAULT_PROBES.find((p) => p.id === 'webgl:vendorRenderer') as CrossRealmProbe;
+    expect(webglProbe.realms).toContain('worker');
+    expect(webglProbe.realms).toContain('shared-worker');
+    expect(webglProbe.exprByRealm?.worker).toContain('OffscreenCanvas');
+    expect(webglProbe.exprByRealm?.['shared-worker']).toContain('OffscreenCanvas');
+    expect(webglProbe.expr).toContain('document.createElement');
   });
 });

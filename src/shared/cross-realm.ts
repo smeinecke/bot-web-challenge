@@ -2,9 +2,9 @@
  * Cross-realm consistency engine.
  *
  * Collects overlapping observations from multiple execution realms (main window,
- * same-origin iframe, blob iframe, worker) and compares both values and
- * descriptors. The goal is to detect environments that patch individual
- * properties but fail to keep the fake state coherent across realms.
+ * same-origin iframe, blob iframe, worker, shared worker) and compares both
+ * values and descriptors. Each probe declares the realms in which it is valid,
+ * so a missing API in an unrelated realm is not treated as a mismatch.
  */
 import { finding, inconclusive, pass, type DetectionResult } from './detector-types';
 
@@ -24,8 +24,12 @@ export interface CrossRealmProbe {
   category: 'browser-integrity' | 'fingerprint' | 'worker' | 'other';
   /** Severity of a mismatch. */
   severity: 'weak' | 'medium' | 'strong';
-  /** JavaScript expression that returns a JSON-serializable value in the realm. */
-  expr: string;
+  /** Realms in which this probe is valid and expected to produce a value. */
+  realms: RealmContext[];
+  /** Default expression used for any realm not overridden by `exprByRealm`. */
+  expr?: string;
+  /** Realm-specific expression overrides (e.g. OffscreenCanvas in workers). */
+  exprByRealm?: Partial<Record<RealmContext, string>>;
   /** Optional comparator. Default is deep equality on the serialized value. */
   compare?: (a: unknown, b: unknown) => boolean;
   /** Human-readable description of what this probe measures. */
@@ -52,103 +56,236 @@ export interface Mismatch {
   otherValue: unknown;
 }
 
+export interface ProbeError {
+  probe: CrossRealmProbe;
+  realm: RealmContext;
+  error: unknown;
+}
+
 function defaultCompare(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+const WEBGL_DOM_EXPR = `(() => {
+  try {
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    if (!gl) return null;
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    if (!ext) return null;
+    return { vendor: gl.getParameter(ext.UNMASKED_VENDOR_WEBGL), renderer: gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) };
+  } catch (e) {
+    return null;
+  }
+})()`;
+
+const WEBGL_OFFSCREEN_EXPR = `(() => {
+  try {
+    if (typeof OffscreenCanvas === 'undefined') return { _notApplicable: true };
+    const canvas = new OffscreenCanvas(1, 1);
+    const gl = canvas.getContext('webgl');
+    if (!gl) return null;
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    if (!ext) return null;
+    return { vendor: gl.getParameter(ext.UNMASKED_VENDOR_WEBGL), renderer: gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) };
+  } catch (e) {
+    return { _error: e.message };
+  }
+})()`;
+
+const INTL_LOCALE_TZ_EXPR = `(() => {
+  try {
+    const opts = Intl.DateTimeFormat().resolvedOptions();
+    return { locale: opts.locale, timeZone: opts.timeZone };
+  } catch (e) {
+    return null;
+  }
+})()`;
+
+const WEBDRIVER_DESCRIPTOR_EXPR = `(() => {
+  try {
+    const desc = Object.getOwnPropertyDescriptor(navigator, 'webdriver');
+    if (!desc) return { type: 'none' };
+    if (desc.get) {
+      return { type: 'getter', native: Function.prototype.toString.call(desc.get).includes('[native code]') };
+    }
+    return { type: 'data', value: desc.value };
+  } catch (e) {
+    return { _error: e.message };
+  }
+})()`;
+
+const USERAGENT_DESCRIPTOR_EXPR = `(() => {
+  try {
+    const desc = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+    if (!desc) return { type: 'none' };
+    if (desc.get) {
+      return { type: 'getter', native: Function.prototype.toString.call(desc.get).includes('[native code]') };
+    }
+    return { type: 'data', value: desc.value };
+  } catch (e) {
+    return { _error: e.message };
+  }
+})()`;
+
+const NAVIGATOR_TAG_EXPR = `(() => {
+  try {
+    return Object.prototype.toString.call(navigator);
+  } catch (e) {
+    return null;
+  }
+})()`;
+
 export const DEFAULT_PROBES: CrossRealmProbe[] = [
-  { id: 'navigator:userAgent', category: 'browser-integrity', severity: 'strong', expr: 'navigator.userAgent', description: 'navigator.userAgent string' },
-  { id: 'navigator:platform', category: 'browser-integrity', severity: 'medium', expr: 'navigator.platform', description: 'navigator.platform string' },
-  { id: 'navigator:languages', category: 'browser-integrity', severity: 'medium', expr: 'JSON.stringify(navigator.languages || [])', description: 'navigator.languages array' },
-  { id: 'navigator:hardwareConcurrency', category: 'browser-integrity', severity: 'medium', expr: 'navigator.hardwareConcurrency', description: 'navigator.hardwareConcurrency' },
-  { id: 'navigator:deviceMemory', category: 'browser-integrity', severity: 'medium', expr: 'navigator.deviceMemory', description: 'navigator.deviceMemory' },
-  { id: 'navigator:maxTouchPoints', category: 'browser-integrity', severity: 'medium', expr: 'navigator.maxTouchPoints', description: 'navigator.maxTouchPoints' },
-  { id: 'navigator:vendor', category: 'browser-integrity', severity: 'medium', expr: 'navigator.vendor', description: 'navigator.vendor' },
-  { id: 'screen:width', category: 'fingerprint', severity: 'weak', expr: 'screen.width', description: 'screen.width' },
-  { id: 'screen:height', category: 'fingerprint', severity: 'weak', expr: 'screen.height', description: 'screen.height' },
-  { id: 'window:devicePixelRatio', category: 'fingerprint', severity: 'weak', expr: 'devicePixelRatio', description: 'window.devicePixelRatio' },
+  {
+    id: 'navigator:userAgent',
+    category: 'browser-integrity',
+    severity: 'strong',
+    realms: ['main', 'same-origin-iframe', 'blob-iframe', 'worker', 'shared-worker'],
+    expr: 'navigator.userAgent',
+    description: 'navigator.userAgent string',
+  },
+  {
+    id: 'navigator:platform',
+    category: 'browser-integrity',
+    severity: 'medium',
+    realms: ['main', 'same-origin-iframe', 'blob-iframe', 'worker', 'shared-worker'],
+    expr: 'navigator.platform',
+    description: 'navigator.platform string',
+  },
+  {
+    id: 'navigator:languages',
+    category: 'browser-integrity',
+    severity: 'medium',
+    realms: ['main', 'same-origin-iframe', 'blob-iframe', 'worker', 'shared-worker'],
+    expr: 'JSON.stringify(navigator.languages || [])',
+    description: 'navigator.languages array',
+  },
+  {
+    id: 'navigator:hardwareConcurrency',
+    category: 'browser-integrity',
+    severity: 'medium',
+    realms: ['main', 'same-origin-iframe', 'blob-iframe', 'worker', 'shared-worker'],
+    expr: 'navigator.hardwareConcurrency',
+    description: 'navigator.hardwareConcurrency',
+  },
+  {
+    id: 'navigator:deviceMemory',
+    category: 'browser-integrity',
+    severity: 'medium',
+    realms: ['main', 'same-origin-iframe', 'blob-iframe'],
+    expr: 'navigator.deviceMemory',
+    description: 'navigator.deviceMemory',
+  },
+  {
+    id: 'navigator:maxTouchPoints',
+    category: 'browser-integrity',
+    severity: 'medium',
+    realms: ['main', 'same-origin-iframe', 'blob-iframe'],
+    expr: 'navigator.maxTouchPoints',
+    description: 'navigator.maxTouchPoints',
+  },
+  {
+    id: 'navigator:vendor',
+    category: 'browser-integrity',
+    severity: 'medium',
+    realms: ['main', 'same-origin-iframe', 'blob-iframe'],
+    expr: 'navigator.vendor',
+    description: 'navigator.vendor',
+  },
+  {
+    id: 'screen:width',
+    category: 'fingerprint',
+    severity: 'weak',
+    realms: ['main', 'same-origin-iframe', 'blob-iframe'],
+    expr: 'screen.width',
+    description: 'screen.width',
+  },
+  {
+    id: 'screen:height',
+    category: 'fingerprint',
+    severity: 'weak',
+    realms: ['main', 'same-origin-iframe', 'blob-iframe'],
+    expr: 'screen.height',
+    description: 'screen.height',
+  },
+  {
+    id: 'window:devicePixelRatio',
+    category: 'fingerprint',
+    severity: 'weak',
+    realms: ['main', 'same-origin-iframe', 'blob-iframe'],
+    expr: 'devicePixelRatio',
+    description: 'window.devicePixelRatio',
+  },
   {
     id: 'webgl:vendorRenderer',
     category: 'fingerprint',
     severity: 'medium',
-    expr: `(() => {
-      try {
-        const canvas = document.createElement('canvas');
-        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-        if (!gl) return null;
-        const ext = gl.getExtension('WEBGL_debug_renderer_info');
-        if (!ext) return null;
-        return { vendor: gl.getParameter(ext.UNMASKED_VENDOR_WEBGL), renderer: gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) };
-      } catch (e) {
-        return null;
-      }
-    })()`,
+    realms: ['main', 'same-origin-iframe', 'blob-iframe', 'worker', 'shared-worker'],
+    expr: WEBGL_DOM_EXPR,
+    exprByRealm: {
+      worker: WEBGL_OFFSCREEN_EXPR,
+      'shared-worker': WEBGL_OFFSCREEN_EXPR,
+    },
     description: 'WebGL vendor and renderer',
   },
   {
     id: 'intl:localeTimezone',
     category: 'browser-integrity',
     severity: 'weak',
-    expr: `(() => {
-      try {
-        const opts = Intl.DateTimeFormat().resolvedOptions();
-        return { locale: opts.locale, timeZone: opts.timeZone };
-      } catch (e) {
-        return null;
-      }
-    })()`,
+    realms: ['main', 'same-origin-iframe', 'blob-iframe', 'worker', 'shared-worker'],
+    expr: INTL_LOCALE_TZ_EXPR,
     description: 'Intl locale and timezone',
   },
   {
     id: 'descriptor:navigator.webdriver',
     category: 'browser-integrity',
     severity: 'strong',
-    expr: `(() => {
-      try {
-        const desc = Object.getOwnPropertyDescriptor(navigator, 'webdriver');
-        if (!desc) return { type: 'none' };
-        if (desc.get) {
-          return { type: 'getter', native: Function.prototype.toString.call(desc.get).includes('[native code]') };
-        }
-        return { type: 'data', value: desc.value };
-      } catch (e) {
-        return null;
-      }
-    })()`,
+    realms: ['main', 'same-origin-iframe', 'blob-iframe', 'worker', 'shared-worker'],
+    expr: WEBDRIVER_DESCRIPTOR_EXPR,
     description: 'navigator.webdriver property descriptor',
   },
   {
     id: 'descriptor:navigator.userAgent',
     category: 'browser-integrity',
     severity: 'medium',
-    expr: `(() => {
-      try {
-        const desc = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
-        if (!desc) return { type: 'none' };
-        if (desc.get) {
-          return { type: 'getter', native: Function.prototype.toString.call(desc.get).includes('[native code]') };
-        }
-        return { type: 'data', value: desc.value };
-      } catch (e) {
-        return null;
-      }
-    })()`,
+    realms: ['main', 'same-origin-iframe', 'blob-iframe', 'worker', 'shared-worker'],
+    expr: USERAGENT_DESCRIPTOR_EXPR,
     description: 'navigator.userAgent property descriptor',
   },
   {
     id: 'prototype:navigator',
     category: 'browser-integrity',
     severity: 'weak',
-    expr: `(() => {
-      try {
-        return Object.prototype.toString.call(navigator);
-      } catch (e) {
-        return null;
-      }
-    })()`,
+    realms: ['main', 'same-origin-iframe', 'blob-iframe'],
+    expr: NAVIGATOR_TAG_EXPR,
+    compare: (a, b) => {
+      // WorkerNavigator instances may legitimately report a different tag than
+      // a window Navigator, so this probe is only compared across window realms.
+      const normalize = (v: unknown) => String(v).replace(/^\[object (?:Worker)?/, '[object ');
+      return normalize(a) === normalize(b);
+    },
     description: 'Navigator prototype tag',
   },
 ];
+
+function probeExprForRealm(probe: CrossRealmProbe, realm: RealmContext): string | undefined {
+  return probe.exprByRealm?.[realm] ?? probe.expr;
+}
+
+function isErrorValue(value: unknown): value is { _error: string } {
+  return typeof value === 'object' && value !== null && '_error' in value;
+}
+
+function isNotApplicable(value: unknown): value is { _notApplicable: true } {
+  return typeof value === 'object' && value !== null && '_notApplicable' in value;
+}
+
+function isValidObservation(snapshot: RealmSnapshot, probeId: string): boolean {
+  if (!(probeId in snapshot.values)) return false;
+  const value = snapshot.values[probeId];
+  return !isErrorValue(value) && !isNotApplicable(value);
+}
 
 function runProbeExpr(expr: string, globalObj: object = globalThis): unknown {
   try {
@@ -163,7 +300,16 @@ function runProbeExpr(expr: string, globalObj: object = globalThis): unknown {
 export function collectMainObservations(probes = DEFAULT_PROBES): RealmSnapshot {
   const values: Record<string, unknown> = {};
   for (const probe of probes) {
-    values[probe.id] = runProbeExpr(probe.expr);
+    if (!probe.realms.includes('main')) {
+      values[probe.id] = { _notApplicable: true };
+      continue;
+    }
+    const expr = probeExprForRealm(probe, 'main');
+    if (!expr) {
+      values[probe.id] = { _error: 'no expression for realm' };
+    } else {
+      values[probe.id] = runProbeExpr(expr);
+    }
   }
   return { realm: 'main', values };
 }
@@ -174,20 +320,29 @@ function patchJsdomCanvas(win: Window): void {
     if (!ua.includes('jsdom')) return;
     const htmlCanvas = (win as Record<string, unknown>).HTMLCanvasElement as unknown as { prototype: { getContext?: unknown } } | undefined;
     if (htmlCanvas && htmlCanvas.prototype) {
-      htmlCanvas.prototype.getContext = function() {
+      htmlCanvas.prototype.getContext = function () {
         throw new Error('canvas not supported in this environment');
       };
     }
   } catch {}
 }
 
-function collectFromWindow(win: Window, probes = DEFAULT_PROBES): Record<string, unknown> {
+function collectFromWindow(win: Window, realm: RealmContext, probes = DEFAULT_PROBES): Record<string, unknown> {
   patchJsdomCanvas(win);
   const values: Record<string, unknown> = {};
   const fnCtor = (win as Record<string, unknown>).Function as typeof Function;
   for (const probe of probes) {
+    if (!probe.realms.includes(realm)) {
+      values[probe.id] = { _notApplicable: true };
+      continue;
+    }
+    const expr = probeExprForRealm(probe, realm);
+    if (!expr) {
+      values[probe.id] = { _error: 'no expression for realm' };
+      continue;
+    }
     try {
-      const fn = new fnCtor('return (' + probe.expr + ')') as () => unknown;
+      const fn = new fnCtor('return (' + expr + ')') as () => unknown;
       values[probe.id] = fn();
     } catch (e) {
       values[probe.id] = { _error: (e as Error).message };
@@ -220,7 +375,7 @@ export function collectSameOriginIframeObservations(probes = DEFAULT_PROBES, tim
         try {
           const win = iframe.contentWindow;
           if (!win) throw new Error('iframe contentWindow is null');
-          const values = collectFromWindow(win, probes);
+          const values = collectFromWindow(win, 'same-origin-iframe', probes);
           cleanup();
           resolve({ realm: 'same-origin-iframe', values });
         } catch (e) {
@@ -271,7 +426,7 @@ export function collectBlobIframeObservations(probes = DEFAULT_PROBES, timeoutMs
         try {
           const win = iframe.contentWindow;
           if (!win) throw new Error('blob iframe contentWindow is null');
-          const values = collectFromWindow(win, probes);
+          const values = collectFromWindow(win, 'blob-iframe', probes);
           cleanup();
           resolve({ realm: 'blob-iframe', values });
         } catch (e) {
@@ -293,17 +448,35 @@ export function collectBlobIframeObservations(probes = DEFAULT_PROBES, timeoutMs
   });
 }
 
-function buildWorkerScript(probes: CrossRealmProbe[]): string {
-  const collectors = probes.map(p => {
-    const safeExpr = p.expr.replace(/\/\*/g, '').replace(/\\/g, '\\\\').replace(/`/g, '\\`');
-    return `probes['${p.id}'] = (() => { try { return (${safeExpr}); } catch (e) { return { _error: e.message }; } })();`;
-  }).join('\n');
+function buildWorkerScript(realm: RealmContext, probes: CrossRealmProbe[]): string {
+  const applicable = probes.filter((p) => p.realms.includes(realm));
+  const collectors = applicable
+    .map((p) => {
+      const expr = probeExprForRealm(p, realm);
+      if (!expr) return `  // no expression for ${p.id}`;
+      const safeExpr = expr.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
+      return `  values[${JSON.stringify(p.id)}] = (() => { try { return (${safeExpr}); } catch (e) { return { _error: e.message }; } })();`;
+    })
+    .join('\n');
+
+  if (realm === 'shared-worker') {
+    return `
+self.onconnect = function(e) {
+  const port = e.ports[0];
+  const values = {};
+${collectors}
+  port.postMessage({ values, realm: ${JSON.stringify(realm)} });
+};
+`;
+  }
 
   return `
-    const probes = {};
-    ${collectors}
-    self.postMessage({ values: probes, realm: 'worker' });
-  `;
+self.onmessage = function(e) {
+  const values = {};
+${collectors}
+  self.postMessage({ values, realm: ${JSON.stringify(realm)} });
+};
+`;
 }
 
 export function collectWorkerObservations(probes = DEFAULT_PROBES, timeoutMs = 2000): Promise<RealmSnapshot> {
@@ -314,7 +487,7 @@ export function collectWorkerObservations(probes = DEFAULT_PROBES, timeoutMs = 2
         return;
       }
 
-      const workerCode = buildWorkerScript(probes);
+      const workerCode = buildWorkerScript('worker', probes);
       const blob = new Blob([workerCode], { type: 'application/javascript' });
       const blobUrl = URL.createObjectURL(blob);
       const worker = new Worker(blobUrl);
@@ -344,55 +517,134 @@ export function collectWorkerObservations(probes = DEFAULT_PROBES, timeoutMs = 2
   });
 }
 
+export function collectSharedWorkerObservations(probes = DEFAULT_PROBES, timeoutMs = 2000): Promise<RealmSnapshot> {
+  return new Promise((resolve) => {
+    try {
+      if (typeof SharedWorker === 'undefined' || typeof Blob === 'undefined' || typeof URL === 'undefined' || !URL.createObjectURL) {
+        resolve({ realm: 'shared-worker', values: {}, inconclusive: true, reason: 'sharedWorkerUnsupported', description: 'SharedWorker not supported' });
+        return;
+      }
+
+      const workerCode = buildWorkerScript('shared-worker', probes);
+      const blob = new Blob([workerCode], { type: 'application/javascript' });
+      const blobUrl = URL.createObjectURL(blob);
+      const worker = new SharedWorker(blobUrl);
+
+      let resolved = false;
+      const cleanup = () => {
+        if (resolved) return;
+        resolved = true;
+        try { URL.revokeObjectURL(blobUrl); } catch {}
+      };
+
+      const timeoutId = setTimeout(() => {
+        cleanup();
+        resolve({ realm: 'shared-worker', values: {}, inconclusive: true, reason: 'sharedWorkerTimeout', description: 'SharedWorker probe timed out' });
+      }, timeoutMs);
+
+      worker.port.onmessage = (e) => {
+        cleanup();
+        clearTimeout(timeoutId);
+        resolve({ realm: 'shared-worker', values: (e.data as { values: Record<string, unknown> }).values });
+      };
+
+      worker.port.onmessageerror = (e) => {
+        cleanup();
+        clearTimeout(timeoutId);
+        resolve({ realm: 'shared-worker', values: {}, inconclusive: true, reason: 'sharedWorkerMessageError', description: `SharedWorker message error: ${(e as MessageEvent).data ?? 'unknown'}` });
+      };
+
+      worker.onerror = (e) => {
+        cleanup();
+        clearTimeout(timeoutId);
+        resolve({ realm: 'shared-worker', values: {}, inconclusive: true, reason: 'sharedWorkerError', description: `SharedWorker error: ${e.message}` });
+      };
+
+      worker.port.start();
+    } catch (e) {
+      resolve({ realm: 'shared-worker', values: {}, inconclusive: true, reason: 'sharedWorkerException', description: `SharedWorker exception: ${(e as Error).message}` });
+    }
+  });
+}
+
 export interface CrossRealmConsistencyResult {
   snapshots: RealmSnapshot[];
   mismatches: Mismatch[];
-  /** Snapshots that could not be collected. */
+  /** Snapshots that could not be collected at all. */
   inconclusive: RealmSnapshot[];
+  /** Per-probe errors in otherwise-collected realms. */
+  probeErrors?: ProbeError[];
 }
 
-function compareSnapshots(snapshots: RealmSnapshot[]): { mismatches: Mismatch[]; inconclusive: RealmSnapshot[] } {
+export function compareSnapshots(snapshots: RealmSnapshot[], probes = DEFAULT_PROBES): { mismatches: Mismatch[]; inconclusive: RealmSnapshot[]; probeErrors: ProbeError[] } {
   const mismatches: Mismatch[] = [];
-  const inconclusive = snapshots.filter(s => s.inconclusive);
+  const inconclusive = snapshots.filter((s) => s.inconclusive);
+  const probeErrors: ProbeError[] = [];
 
-  // Use the first non-inconclusive snapshot as the reference. If all are main, that's fine.
-  const reference = snapshots.find(s => !s.inconclusive);
-  if (!reference) return { mismatches, inconclusive };
+  const comparable = snapshots.filter((s) => !s.inconclusive);
 
-  for (const other of snapshots) {
-    if (other === reference || other.inconclusive) continue;
+  for (const probe of probes) {
+    const applicable = comparable.filter((s) => probe.realms.includes(s.realm));
+    const valid: { snapshot: RealmSnapshot; value: unknown }[] = [];
+    const errors: { snapshot: RealmSnapshot; value: { _error: string } }[] = [];
 
-    for (const probe of DEFAULT_PROBES) {
+    for (const s of applicable) {
+      const value = s.values[probe.id];
+      if (isValidObservation(s, probe.id)) {
+        valid.push({ snapshot: s, value });
+      } else if (isErrorValue(value)) {
+        errors.push({ snapshot: s, value });
+      }
+    }
+
+    if (valid.length >= 2) {
       const compare = probe.compare ?? defaultCompare;
-      const a = reference.values[probe.id];
-      const b = other.values[probe.id];
-      if (!compare(a, b)) {
-        mismatches.push({
-          probe,
-          referenceRealm: reference.realm,
-          otherRealm: other.realm,
-          referenceValue: a,
-          otherValue: b,
-        });
+      const reference = valid[0];
+      let mismatchFound = false;
+      for (let i = 1; i < valid.length; i++) {
+        if (!compare(reference.value, valid[i].value)) {
+          mismatches.push({
+            probe,
+            referenceRealm: reference.snapshot.realm,
+            otherRealm: valid[i].snapshot.realm,
+            referenceValue: reference.value,
+            otherValue: valid[i].value,
+          });
+          mismatchFound = true;
+        }
+      }
+      if (!mismatchFound && errors.length > 0) {
+        for (const e of errors) {
+          probeErrors.push({ probe, realm: e.snapshot.realm, error: e.value });
+        }
+      }
+    } else if (valid.length >= 1 && errors.length > 0) {
+      for (const e of errors) {
+        probeErrors.push({ probe, realm: e.snapshot.realm, error: e.value });
+      }
+    } else if (valid.length === 0 && errors.length > 0) {
+      for (const e of errors) {
+        probeErrors.push({ probe, realm: e.snapshot.realm, error: e.value });
       }
     }
   }
 
-  return { mismatches, inconclusive };
+  return { mismatches, inconclusive, probeErrors };
 }
 
 export async function runCrossRealmConsistency(): Promise<CrossRealmConsistencyResult> {
-  const [main, sameOrigin, blob, worker] = await Promise.all([
+  const [main, sameOrigin, blob, worker, sharedWorker] = await Promise.all([
     collectMainObservations(),
     collectSameOriginIframeObservations(),
     collectBlobIframeObservations(),
     collectWorkerObservations(),
+    collectSharedWorkerObservations(),
   ]);
 
-  const snapshots = [main, sameOrigin, blob, worker];
-  const { mismatches, inconclusive } = compareSnapshots(snapshots);
+  const snapshots = [main, sameOrigin, blob, worker, sharedWorker];
+  const { mismatches, inconclusive, probeErrors } = compareSnapshots(snapshots);
 
-  return { snapshots, mismatches, inconclusive };
+  return { snapshots, mismatches, inconclusive, probeErrors };
 }
 
 export function crossRealmMismatchesToFindings(result: CrossRealmConsistencyResult): DetectionResult[] {
@@ -410,8 +662,10 @@ export function crossRealmMismatchesToFindings(result: CrossRealmConsistencyResu
     );
   }
 
+  const mismatchProbeIds = new Set<string>();
   const mismatchesByProbe = new Map<string, Mismatch[]>();
   for (const m of result.mismatches) {
+    mismatchProbeIds.add(m.probe.id);
     const list = mismatchesByProbe.get(m.probe.id) ?? [];
     list.push(m);
     mismatchesByProbe.set(m.probe.id, list);
@@ -442,6 +696,19 @@ export function crossRealmMismatchesToFindings(result: CrossRealmConsistencyResu
         'cross-realm-mismatch',
         `Cross-realm inconsistency in ${probe.description} across ${Array.from(involvedRealms).join(', ')}`,
         evidence
+      )
+    );
+  }
+
+  for (const pe of result.probeErrors ?? []) {
+    if (mismatchProbeIds.has(pe.probe.id)) continue;
+    findings.push(
+      inconclusive(
+        'browser-integrity',
+        `cross-realm:${pe.probe.id}`,
+        pe.realm,
+        'probe-error',
+        `Could not evaluate ${pe.probe.description} in ${pe.realm}: ${(pe.error as { _error: string })._error ?? 'unknown'}`
       )
     );
   }

@@ -21,6 +21,7 @@ import * as browserChecks from './browser-checks';
 import * as workerChecks from './worker-checks';
 import * as interactionChecks from './interaction-checks';
 import * as crossRealm from './cross-realm';
+import * as gpuCoherence from './gpu-coherence';
 
 export interface DetectorRegistryEntry {
   id: string;
@@ -945,6 +946,67 @@ const STATIC_REGISTRY: DetectorRegistryEntry[] = [
     description: 'Extended automation globals detected',
     defaultSeverity: 'strong',
     run: () => browserChecks.checkAutomationGlobalsExtended(),
+  },
+  {
+    id: 'hasSyntheticEventTrustedInvariant',
+    artifactId: 'event:is-trusted-invariant',
+    category: 'browser-integrity',
+    context: 'main',
+    critical: true,
+    isAsync: false,
+    description: 'Synthetic Event.isTrusted invariant',
+    defaultSeverity: 'hard',
+    run: () => browserChecks.checkSyntheticEventIsTrusted(),
+  },
+  {
+    id: 'hasRuntimeAPIIntegrityViolation',
+    artifactId: 'runtime-api:integrity',
+    category: 'api-integrity',
+    context: 'main',
+    critical: false,
+    isAsync: false,
+    description: 'Runtime API integrity (non-native function tampering)',
+    defaultSeverity: 'medium',
+    run: () => browserChecks.checkRuntimeAPIIntegrity(),
+  },
+  {
+    id: 'hasMediaDeviceInfoIntegrity',
+    artifactId: 'media-devices:info-integrity',
+    category: 'api-integrity',
+    context: 'main',
+    critical: false,
+    isAsync: true,
+    timeoutMs: 3000,
+    description: 'MediaDeviceInfo entries do not resemble native objects',
+    defaultSeverity: 'medium',
+    run: () => browserChecks.checkMediaDeviceInfoSemantics(),
+    unsupportedPolicy: 'pass',
+  },
+  {
+    id: 'hasHighEntropyClientHintsCoherence',
+    artifactId: 'client-hints:high-entropy',
+    category: 'api-integrity',
+    context: 'main',
+    critical: false,
+    isAsync: true,
+    timeoutMs: 3000,
+    description: 'High-entropy User-Agent Client Hints coherence',
+    defaultSeverity: 'medium',
+    run: () => browserChecks.checkHighEntropyClientHintsCoherence(),
+    unsupportedPolicy: 'pass',
+  },
+  {
+    id: 'hasWebGLWebGPUCoherence',
+    artifactId: 'gpu:webgl-webgpu',
+    category: 'fingerprint',
+    context: 'main',
+    critical: false,
+    isAsync: true,
+    timeoutMs: 3000,
+    description: 'WebGL and WebGPU adapter coherence',
+    defaultSeverity: 'medium',
+    run: () => gpuCoherence.checkWebGLWebGPUCoherence(),
+    unsupportedPolicy: 'pass',
   },
 ];
 

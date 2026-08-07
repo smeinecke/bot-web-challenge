@@ -179,6 +179,15 @@ export function evaluateWorkerConsistency(workerData: WorkerResults): Record<str
     details.hardwareConcurrency = { main: navigator.hardwareConcurrency, worker: workerData.hardwareConcurrency };
   }
 
+  if (workerData.languages && navigator.languages) {
+    const mainLangs = JSON.stringify(navigator.languages);
+    const workerLangs = JSON.stringify(workerData.languages);
+    if (mainLangs !== workerLangs) {
+      inconsistencies.push('languages');
+      details.languages = { main: mainLangs.slice(0, 100), worker: workerLangs.slice(0, 100) };
+    }
+  }
+
   if (workerData.webGLVendor && workerData.webGLVendor !== 'NA') {
     try {
       const canvas = document.createElement('canvas');

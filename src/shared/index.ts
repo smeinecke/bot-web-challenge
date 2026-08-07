@@ -13,3 +13,4 @@ export * from './detector-registry';
 export * from './interaction-checks';
 export * from './challenge';
 export * from './cross-realm';
+export * from './gpu-coherence';
