@@ -7,7 +7,7 @@
  * migrate toward emitting `DetectionResult` (or `DetectionResult[]`) directly.
  */
 
-export type DetectionStatus = 'passed' | 'finding' | 'inconclusive';
+export type DetectionStatus = 'passed' | 'finding' | 'inconclusive' | 'not-applicable';
 
 export type DetectionSeverity = 'info' | 'weak' | 'medium' | 'strong' | 'hard';
 
@@ -28,6 +28,8 @@ export type DetectionCategory =
 
 export type DetectionVerdict = 'human' | 'suspicious' | 'bot' | 'unknown';
 
+export type VerdictImpact = 'corroborating' | 'standalone';
+
 /**
  * Structured evidence. Must NOT contain keyboard characters, input values,
  * passwords, clipboard contents, KeyboardEvent.key, or KeyboardEvent.code.
@@ -40,7 +42,7 @@ export interface DetectionEvidence {
  * Canonical detector result.
  */
 export interface DetectionResult {
-  /** Whether this check passed, found something, or could not complete. */
+  /** Whether this check passed, found something, could not complete, or does not apply to this environment/mode. */
   status: DetectionStatus;
 
   /** Severity of the finding. `passed` results should use `info` severity. */
@@ -65,6 +67,12 @@ export interface DetectionResult {
   /** Human-readable description. */
   description: string;
 
+  /**
+   * Whether this finding is decisive on its own (`standalone`) or must be
+   * combined with other evidence (`corroborating`).
+   */
+  verdictImpact?: VerdictImpact;
+
   /** Optional 0-1 confidence. */
   confidence?: number;
 
@@ -76,6 +84,9 @@ export interface DetectionResult {
 
   /** ID of the detector that emitted this result (filled by the runner). */
   detectorId?: string;
+
+  /** When an artifact is reported by several detectors, all their IDs are listed here. */
+  detectorIds?: string[];
 
   /** Whether this detector is considered critical for coverage. */
   critical?: boolean;
@@ -118,6 +129,7 @@ export interface DetectorSummary {
   passed: number;
   finding: number;
   inconclusive: number;
+  notApplicable: number;
   infoFindings: number;
   weakFindings: number;
   mediumFindings: number;
@@ -129,11 +141,12 @@ export interface DetectorSummary {
   botDetected: boolean;
   /** Legacy boolean for consumers that expect `suspicious`. */
   suspicious: boolean;
-  /** 0-1 coverage ratio of critical checks that completed. */
+  /** 0-100 coverage percentage of critical checks that completed. */
   coverage: number;
   criticalChecksTotal: number;
   criticalChecksCompleted: number;
   criticalChecksInconclusive: number;
+  criticalChecksNotApplicable: number;
   /** Number of unique scored artifacts. */
   uniqueEvidenceCount: number;
   /** Number of independent categories represented in scored artifacts. */
@@ -193,6 +206,27 @@ export function pass(
   };
 }
 
+/** Helper: a not-applicable result for detectors that cannot run in this environment/mode. */
+export function notApplicable(
+  category: DetectionCategory,
+  artifactId: string,
+  context: DetectionContext,
+  reason: string,
+  description: string,
+  evidence?: DetectionEvidence
+): DetectionResult {
+  return {
+    status: 'not-applicable',
+    severity: 'info',
+    category,
+    artifactId,
+    context,
+    reason,
+    description,
+    evidence,
+  };
+}
+
 /** Helper: a finding with explicit severity. */
 export function finding(
   severity: DetectionSeverity,
@@ -202,7 +236,8 @@ export function finding(
   reason: string,
   description: string,
   evidence?: DetectionEvidence,
-  confidence?: number
+  confidence?: number,
+  verdictImpact?: VerdictImpact
 ): DetectionResult {
   return {
     status: 'finding',
@@ -212,6 +247,7 @@ export function finding(
     context,
     reason,
     description,
+    verdictImpact: verdictImpact ?? 'corroborating',
     evidence,
     confidence,
   };

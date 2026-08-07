@@ -86,16 +86,66 @@ export function checkWebdriverNull(): boolean {
   return navigator.webdriver === null;
 }
 
-/** Check for webdriver in iframe */
-export function checkWebdriverInFrame(): boolean {
+/**
+ * Check for webdriver in iframe.
+ *
+ * Returns a strong standalone finding if `navigator.webdriver === true` inside
+ * a same-origin iframe. If the iframe cannot be inspected, the result is
+ * inconclusive rather than a silent pass.
+ */
+export function checkWebdriverInFrame(): DetectionResult[] {
   const iframe = document.createElement('iframe');
   iframe.style.display = 'none';
   document.body.appendChild(iframe);
   try {
     const frameWindow = iframe.contentWindow;
-    return frameWindow !== null && frameWindow.navigator.webdriver === true;
-  } catch {
-    return false;
+    if (!frameWindow) {
+      return [
+        inconclusive(
+          'webdriver',
+          'webdriver:iframe-true',
+          'iframe',
+          'iframe-inspection-failed',
+          'Could not access iframe contentWindow for webdriver inspection'
+        ),
+      ];
+    }
+
+    if (frameWindow.navigator.webdriver === true) {
+      return [
+        finding(
+          'strong',
+          'webdriver',
+          'webdriver:iframe-true',
+          'iframe',
+          'webdriver-true-in-iframe',
+          'navigator.webdriver === true inside a same-origin iframe',
+          undefined,
+          undefined,
+          'standalone'
+        ),
+      ];
+    }
+
+    return [
+      pass(
+        'webdriver',
+        'webdriver:iframe-true',
+        'iframe',
+        'no-webdriver',
+        'navigator.webdriver is not true inside the iframe'
+      ),
+    ];
+  } catch (e) {
+    return [
+      inconclusive(
+        'webdriver',
+        'webdriver:iframe-true',
+        'iframe',
+        'iframe-inspection-failed',
+        `Iframe webdriver inspection failed: ${(e as Error).message}`
+      ),
+    ];
   } finally {
     document.body.removeChild(iframe);
   }
@@ -156,8 +206,13 @@ export function checkSequentum(): boolean {
   }
 }
 
-/** Check for Selenium Chrome default marker */
-export function checkSeleniumChromeDefault(): boolean {
+/**
+ * Check for Selenium Chrome default CDC markers.
+ *
+ * Each discovered marker is reported as its own `automation-marker:<marker>`
+ * artifact so duplicate reporting across detectors can be fused.
+ */
+export function checkSeleniumChromeDefault(): DetectionResult[] {
   const cdcKeys = [
     'cdc_adoQpoasnfa76pfcZLmcfl_',
     '$cdc_asdjflasutopfhvcZLmcfl_',
@@ -165,12 +220,51 @@ export function checkSeleniumChromeDefault(): boolean {
     'cdc_asdjflasutopfhvcZLmcfl_Promise',
     'cdc_asdjflasutopfhvcZLmcfl_Symbol'
   ];
-  for (const key of cdcKeys) {
-    if (key in window || key in document) {
-      return true;
+
+  try {
+    const results: DetectionResult[] = [];
+    for (const marker of cdcKeys) {
+      if (marker in window || marker in document) {
+        results.push(
+          finding(
+            'strong',
+            'cdp',
+            `automation-marker:${marker}`,
+            'main',
+            'cdp-marker-detected',
+            `Selenium/ChromeDriver CDC marker detected: ${marker}`,
+            { marker, reportedBy: 'isSeleniumChromeDefault' },
+            undefined,
+            'standalone'
+          )
+        );
+      }
     }
+
+    if (results.length === 0) {
+      return [
+        pass(
+          'cdp',
+          'automation-marker:selenium-chrome-default',
+          'main',
+          'no-marker',
+          'No Selenium ChromeDriver CDC markers found'
+        ),
+      ];
+    }
+
+    return results;
+  } catch (e) {
+    return [
+      inconclusive(
+        'cdp',
+        'automation-marker:selenium-chrome-default',
+        'main',
+        'inspection-error',
+        `Selenium Chrome default marker inspection failed: ${(e as Error).message}`
+      ),
+    ];
   }
-  return false;
 }
 
 /** Check for headless Chrome indicators */
@@ -347,37 +441,33 @@ interface PrepareStackTraceInfo {
 }
 
 function getPrepareStackTraceInfo(ErrorCtor: unknown): PrepareStackTraceInfo | null {
-  try {
-    if (typeof ErrorCtor !== 'function') return null;
+  if (typeof ErrorCtor !== 'function') return null;
 
-    let owner = 'Error';
-    let descriptor = Object.getOwnPropertyDescriptor(ErrorCtor, 'prepareStackTrace');
-    if (!descriptor && (ErrorCtor as { prototype?: unknown }).prototype) {
-      descriptor = Object.getOwnPropertyDescriptor(
-        (ErrorCtor as { prototype: Record<string, unknown> }).prototype,
-        'prepareStackTrace'
-      );
-      owner = 'Error.prototype';
-    }
-
-    const handler = descriptor?.value ?? descriptor?.get?.();
-    if (typeof handler !== 'function') return null;
-
-    const source = Function.prototype.toString.call(handler);
-    const isNative = source.includes('[native code]');
-
-    return {
-      source,
-      sourceHash: hashString(source),
-      sourcePreview: source.slice(0, 80).replace(/\s+/g, ' '),
-      isNative,
-      descriptorOwner: owner,
-      isDataProperty: descriptor ? 'value' in descriptor : false,
-      isGetter: descriptor ? typeof descriptor.get === 'function' : false,
-    };
-  } catch {
-    return null;
+  let owner = 'Error';
+  let descriptor = Object.getOwnPropertyDescriptor(ErrorCtor, 'prepareStackTrace');
+  if (!descriptor && (ErrorCtor as { prototype?: unknown }).prototype) {
+    descriptor = Object.getOwnPropertyDescriptor(
+      (ErrorCtor as { prototype: Record<string, unknown> }).prototype,
+      'prepareStackTrace'
+    );
+    owner = 'Error.prototype';
   }
+
+  const handler = descriptor?.value ?? descriptor?.get?.();
+  if (typeof handler !== 'function') return null;
+
+  const source = Function.prototype.toString.call(handler);
+  const isNative = source.includes('[native code]');
+
+  return {
+    source,
+    sourceHash: hashString(source),
+    sourcePreview: source.slice(0, 80).replace(/\s+/g, ' '),
+    isNative,
+    descriptorOwner: owner,
+    isDataProperty: descriptor ? 'value' in descriptor : false,
+    isGetter: descriptor ? typeof descriptor.get === 'function' : false,
+  };
 }
 
 function classifyPrepareStackTraceSource(source: string): {
@@ -524,7 +614,7 @@ export function checkPrepareStackTrace(): DetectionResult[] {
         'browser-integrity',
         'prepare-stack-trace:main',
         'main',
-        'inspection-exception',
+        'inspection-error',
         `Error.prepareStackTrace inspection failed: ${(e as Error).message}`
       )
     );
@@ -665,42 +755,134 @@ export function checkCanvasAvailability(): Record<string, unknown> | false {
   }
 }
 
-/** Check for CDP automation in main context */
-export function checkAutomatedWithCDP(): { marker: string; description: string } | false {
+/**
+ * Check for CDP automation markers in the main context.
+ *
+ * Each discovered marker is reported as its own `automation-marker:<marker>`
+ * artifact so that direct CDP markers are scored individually and de-duplicated
+ * across detectors.
+ */
+export function checkAutomatedWithCDP(): DetectionResult[] {
   const cdpMarkers = [
     '__cdp_eval', '__cdp_js_executor', '__selenium_eval',
     '__fxdriver_eval', '__webdriver_eval', 'cdc_adoQpoasnfa76pfcZLmcfl_',
     '$cdc_asdjflasutopfhvcZLmcfl_'
   ];
 
-  for (const marker of cdpMarkers) {
-    if (marker in window) {
-      return { marker, description: `CDP marker found: ${marker}` };
+  try {
+    const results: DetectionResult[] = [];
+    for (const marker of cdpMarkers) {
+      if (marker in window) {
+        results.push(
+          finding(
+            'strong',
+            'cdp',
+            `automation-marker:${marker}`,
+            'main',
+            'cdp-marker-detected',
+            `CDP automation marker found: ${marker}`,
+            { marker, reportedBy: 'isAutomatedWithCDP' },
+            undefined,
+            'standalone'
+          )
+        );
+      }
     }
-  }
 
-  return false;
+    if (results.length === 0) {
+      return [
+        pass(
+          'cdp',
+          'automation-marker:cdp-global',
+          'main',
+          'no-marker',
+          'No CDP automation markers found'
+        ),
+      ];
+    }
+
+    return results;
+  } catch (e) {
+    return [
+      inconclusive(
+        'cdp',
+        'automation-marker:cdp-global',
+        'main',
+        'inspection-error',
+        `CDP automation marker inspection failed: ${(e as Error).message}`
+      ),
+    ];
+  }
 }
 
-/** Check for iframe behavior being overridden */
-export function checkIframeOverridden(): { reason: string; description: string } | false {
+/**
+ * Check for iframe behavior being overridden.
+ *
+ * A tampered iframe is strong standalone evidence of anti-detection tampering.
+ * Inspection failures are reported as inconclusive rather than a silent pass.
+ */
+export function checkIframeOverridden(): DetectionResult[] {
   const iframe = document.createElement('iframe');
   iframe.style.display = 'none';
   document.body.appendChild(iframe);
   try {
     const contentWindow = iframe.contentWindow;
 
-    if (contentWindow && !('navigator' in contentWindow)) {
-      return { reason: 'noNavigator', description: 'Iframe navigator missing - anti-detection script likely active' };
+    if (contentWindow && !contentWindow.navigator) {
+      return [
+        finding(
+          'strong',
+          'browser-integrity',
+          'iframe:overridden',
+          'main',
+          'no-navigator',
+          'Iframe navigator missing — anti-detection script likely active',
+          { reason: 'noNavigator' },
+          undefined,
+          'standalone'
+        ),
+      ];
     }
 
-    if (contentWindow && contentWindow.toString && contentWindow.toString.toString().indexOf('[native code]') === -1) {
-      return { reason: 'toStringModified', description: 'Iframe toString modified - anti-detection evasion detected' };
+    if (
+      contentWindow &&
+      contentWindow.toString &&
+      contentWindow.toString.toString().indexOf('[native code]') === -1
+    ) {
+      return [
+        finding(
+          'strong',
+          'browser-integrity',
+          'iframe:overridden',
+          'main',
+          'toString-modified',
+          'Iframe toString modified — anti-detection evasion detected',
+          { reason: 'toStringModified' },
+          undefined,
+          'standalone'
+        ),
+      ];
     }
 
-    return false;
-  } catch {
-    return false;
+    return [
+      pass(
+        'browser-integrity',
+        'iframe:overridden',
+        'main',
+        'no-override',
+        'Iframe behavior looks normal'
+      ),
+    ];
+  } catch (e) {
+    return [
+      inconclusive(
+        'browser-integrity',
+        'iframe:overridden',
+        'main',
+        'inspection-error',
+        `Iframe override inspection failed: ${(e as Error).message}`
+      ),
+    ];
   } finally {
     document.body.removeChild(iframe);
   }
@@ -778,7 +960,9 @@ export function checkMissingBrowserChrome(): DetectionResult[] {
         'main',
         'zero-outer',
         `outerWidth/Height is 0 — classic headless browser indicator`,
-        { outerWidth, outerHeight }
+        { outerWidth, outerHeight },
+        undefined,
+        'standalone'
       )
     );
     return results;
@@ -800,7 +984,9 @@ export function checkMissingBrowserChrome(): DetectionResult[] {
         'main',
         'outer-lt-inner',
         `outer < inner (outer: ${outerWidth}x${outerHeight}, inner: ${innerWidth}x${innerHeight}) — impossible in real browser`,
-        { outerWidth, outerHeight, innerWidth, innerHeight }
+        { outerWidth, outerHeight, innerWidth, innerHeight },
+        undefined,
+        'standalone'
       )
     );
     return results;
@@ -1155,8 +1341,25 @@ export function checkViewportScreenCoherence(): Record<string, unknown> | false 
   return false;
 }
 
-/** Extended automation-specific globals check */
-export function checkAutomationGlobalsExtended(): Record<string, unknown> | false {
+/** Known CDP marker prefixes used to decide category and severity. */
+const CDP_MARKER_PREFIXES = ['cdc_', '$cdc_'];
+
+function isCDPMarker(marker: string): boolean {
+  return CDP_MARKER_PREFIXES.some(prefix => marker.startsWith(prefix));
+}
+
+function markerCategory(marker: string): 'cdp' | 'automation-global' {
+  return isCDPMarker(marker) ? 'cdp' : 'automation-global';
+}
+
+/**
+ * Extended automation-specific globals check.
+ *
+ * Each discovered marker is reported with a marker-specific artifact. Direct
+ * CDP markers are strong standalone `cdp` findings; confirmed automation
+ * framework globals are strong `automation-global` findings.
+ */
+export function checkAutomationGlobalsExtended(): DetectionResult[] {
   const markers = [
     'domAutomation', 'domAutomationController',
     '__webdriver_script_fn', '__driver_evaluate',
@@ -1166,20 +1369,52 @@ export function checkAutomationGlobalsExtended(): Record<string, unknown> | fals
     '$cdc_asdjflasutopfhvcZLmcfl_'
   ];
 
-  const found: string[] = [];
-  for (const marker of markers) {
-    if (marker in window || marker in document) {
-      found.push(marker);
+  try {
+    const results: DetectionResult[] = [];
+    for (const marker of markers) {
+      if (marker in window || marker in document) {
+        const category = markerCategory(marker);
+        const isCDP = category === 'cdp';
+        results.push(
+          finding(
+            'strong',
+            category,
+            `automation-marker:${marker}`,
+            'main',
+            isCDP ? 'cdp-marker-detected' : 'automation-global-detected',
+            `${isCDP ? 'CDP' : 'Automation'} marker detected: ${marker}`,
+            { marker, reportedBy: 'hasAutomationGlobalsExtended' },
+            undefined,
+            'standalone'
+          )
+        );
+      }
     }
-  }
 
-  if (found.length > 0) {
-    return {
-      markers: found,
-      description: `Automation globals detected: ${found.join(', ')}`
-    };
+    if (results.length === 0) {
+      return [
+        pass(
+          'automation-global',
+          'automation-marker:globals',
+          'main',
+          'no-marker',
+          'No extended automation globals found'
+        ),
+      ];
+    }
+
+    return results;
+  } catch (e) {
+    return [
+      inconclusive(
+        'automation-global',
+        'automation-marker:globals',
+        'main',
+        'inspection-error',
+        `Automation globals inspection failed: ${(e as Error).message}`
+      ),
+    ];
   }
-  return false;
 }
 
 /**
@@ -1264,112 +1499,187 @@ export function analyzeWeakSignals(): DetectionResult[] {
   return results;
 }
 
-/** Check for CDP/automation leaks via blob URL iframe */
-export function checkBlobIframeCDP(): Promise<Record<string, unknown> | false> {
+/**
+ * Check for CDP/automation leaks via blob URL iframe.
+ *
+ * Each direct marker found in the blob realm is emitted as a standalone strong
+ * `cdp` finding. Realm inconsistencies are reported separately as
+ * `browser-integrity`/`webdriver` findings. Failures are inconclusive.
+ */
+export function checkBlobIframeCDP(): Promise<DetectionResult[]> {
   return new Promise((resolve) => {
+    const results: DetectionResult[] = [];
+    let resolved = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let url: string | undefined;
+    let iframe: HTMLIFrameElement | undefined;
+
+    const cdpMarkers = [
+      '__cdp_eval', '__cdp_js_executor', '__selenium_eval',
+      '__fxdriver_eval', '__webdriver_eval', 'cdc_adoQpoasnfa76pfcZLmcfl_',
+      '$cdc_asdjflasutopfhvcZLmcfl_',
+      'cdc_asdjflasutopfhvcZLmcfl_Array',
+      'cdc_asdjflasutopfhvcZLmcfl_Promise',
+      'cdc_asdjflasutopfhvcZLmcfl_Symbol'
+    ];
+
+    function cleanup() {
+      if (timeoutId) clearTimeout(timeoutId);
+      try { if (url) URL.revokeObjectURL(url); } catch {}
+      try { if (iframe && iframe.parentNode) document.body.removeChild(iframe); } catch {}
+    }
+
+    function finish(failureReason?: 'load-error' | 'no-content-window' | 'timeout' | 'inspection-error') {
+      if (resolved) return;
+      resolved = true;
+      cleanup();
+
+      if (failureReason) {
+        results.push(
+          inconclusive(
+            'cdp',
+            'blob-iframe:inspection',
+            'blob-iframe',
+            failureReason,
+            `Blob iframe inspection failed: ${failureReason}`
+          )
+        );
+      } else if (results.length === 0) {
+        results.push(
+          pass(
+            'cdp',
+            'blob-iframe:inspection',
+            'blob-iframe',
+            'no-marker',
+            'No CDP/automation markers or realm inconsistencies in blob iframe'
+          )
+        );
+      }
+
+      resolve(results);
+    }
+
+    function inspectBlobRealm() {
+      const win = iframe?.contentWindow;
+      if (!win) {
+        finish('no-content-window');
+        return;
+      }
+
+      try {
+        const mainWebdriver = navigator.webdriver;
+        const frameWebdriver = win.navigator.webdriver;
+        if (mainWebdriver !== frameWebdriver) {
+          results.push(
+            finding(
+              'medium',
+              'webdriver',
+              'webdriver:realm-mismatch',
+              'blob-iframe',
+              'webdriver-mismatch',
+              `navigator.webdriver differs between main and blob iframe realms`,
+              { main: mainWebdriver, frame: frameWebdriver }
+            )
+          );
+        }
+
+        for (const marker of cdpMarkers) {
+          if (marker in win) {
+            results.push(
+              finding(
+                'strong',
+                'cdp',
+                `automation-marker:${marker}`,
+                'blob-iframe',
+                'cdp-marker-in-iframe',
+                `CDP/automation marker ${marker} found in blob iframe`,
+                { marker },
+                undefined,
+                'standalone'
+              )
+            );
+          }
+        }
+
+        if (navigator.userAgent !== win.navigator.userAgent) {
+          results.push(
+            finding(
+              'weak',
+              'browser-integrity',
+              'user-agent:realm-mismatch',
+              'blob-iframe',
+              'user-agent-mismatch',
+              'User-Agent differs between main frame and blob iframe',
+              { main: navigator.userAgent, frame: win.navigator.userAgent }
+            )
+          );
+        }
+
+        const mainLangs = JSON.stringify(navigator.languages || []);
+        const frameLangs = JSON.stringify(win.navigator.languages || []);
+        if (mainLangs !== frameLangs) {
+          results.push(
+            finding(
+              'weak',
+              'browser-integrity',
+              'languages:realm-mismatch',
+              'blob-iframe',
+              'languages-mismatch',
+              'navigator.languages differs between main frame and blob iframe',
+              { main: navigator.languages, frame: win.navigator.languages }
+            )
+          );
+        }
+
+        const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
+        if (isChrome && typeof (win as Record<string, unknown>).chrome === 'undefined') {
+          results.push(
+            finding(
+              'medium',
+              'browser-integrity',
+              'chrome:realm-missing',
+              'blob-iframe',
+              'chrome-missing-in-blob-iframe',
+              'window.chrome is missing inside the blob iframe on a Chromium browser'
+            )
+          );
+        }
+
+        finish();
+      } catch (e) {
+        finish('inspection-error');
+      }
+    }
+
     try {
       const html = '<!DOCTYPE html><html><head></head><body></body></html>';
       const blob = new Blob([html], { type: 'text/html' });
-      const url = URL.createObjectURL(blob);
 
-      const iframe = document.createElement('iframe');
-      iframe.style.display = 'none';
-      iframe.src = url;
-
-      let resolved = false;
-      function cleanup() {
-        if (resolved) return;
-        resolved = true;
-        try { URL.revokeObjectURL(url); } catch {}
-        try { document.body.removeChild(iframe); } catch {}
+      // In environments without URL.createObjectURL (e.g. jsdom), fall back to
+      // about:blank. The inspection still uses whatever contentWindow is available.
+      if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+        url = URL.createObjectURL(blob);
       }
 
-      iframe.onload = function() {
-        try {
-          const win = iframe.contentWindow;
-          if (!win) {
-            cleanup();
-            resolve(false);
-            return;
-          }
+      iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = url ?? 'about:blank';
 
-          const issues: Array<{ reason: string; description: string }> = [];
-
-          const mainWebdriver = navigator.webdriver;
-          const frameWebdriver = win.navigator.webdriver;
-          if (mainWebdriver !== frameWebdriver) {
-            issues.push({
-              reason: 'webdriverMismatch',
-              description: `navigator.webdriver mismatch: main=${mainWebdriver}, iframe=${frameWebdriver}`
-            });
-          }
-
-          const cdpMarkers = [
-            '__cdp_eval', '__cdp_js_executor', '__selenium_eval',
-            '__fxdriver_eval', '__webdriver_eval', 'cdc_adoQpoasnfa76pfcZLmcfl_'
-          ];
-          for (const marker of cdpMarkers) {
-            if (marker in win) {
-              issues.push({
-                reason: 'cdpMarkerInIframe',
-                description: `CDP marker ${marker} found in blob iframe`
-              });
-            }
-          }
-
-          if (navigator.userAgent !== win.navigator.userAgent) {
-            issues.push({
-              reason: 'userAgentMismatch',
-              description: 'User-Agent mismatch between main frame and blob iframe'
-            });
-          }
-
-          const mainLangs = JSON.stringify(navigator.languages || []);
-          const frameLangs = JSON.stringify(win.navigator.languages || []);
-          if (mainLangs !== frameLangs) {
-            issues.push({
-              reason: 'languagesMismatch',
-              description: 'navigator.languages mismatch between main frame and blob iframe'
-            });
-          }
-
-          const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
-          if (isChrome && typeof (win as Record<string, unknown>).chrome === 'undefined') {
-            issues.push({
-              reason: 'chromeMissingInIframe',
-              description: 'window.chrome missing in blob iframe on Chromium browser'
-            });
-          }
-
-          cleanup();
-
-          if (issues.length > 0) {
-            resolve({
-              issues: issues.map(i => i.reason),
-              description: issues.map(i => i.description).join('; ')
-            });
-          } else {
-            resolve(false);
-          }
-        } catch {
-          cleanup();
-          resolve(false);
-        }
+      iframe.onload = function () {
+        inspectBlobRealm();
       };
 
-      iframe.onerror = function() {
-        cleanup();
-        resolve(false);
+      iframe.onerror = function () {
+        finish('load-error');
       };
 
-      setTimeout(() => {
-        cleanup();
-        resolve(false);
+      timeoutId = setTimeout(() => {
+        finish('timeout');
       }, 2000);
 
       document.body.appendChild(iframe);
-    } catch {
-      resolve(false);
+    } catch (e) {
+      finish('inspection-error');
     }
   });
 }

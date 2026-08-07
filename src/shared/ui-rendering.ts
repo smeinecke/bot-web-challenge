@@ -65,6 +65,7 @@ function closeModal(): void {
 }
 
 function displayLabelAndClass(severity: string, status: string): { label: string; cls: string } {
+  if (status === 'not-applicable') return { label: 'N/A', cls: 'not-applicable' };
   if (status === 'inconclusive') return { label: 'INCONCLUSIVE', cls: 'inconclusive' };
   if (status === 'passed') return { label: 'NO', cls: 'false' };
 

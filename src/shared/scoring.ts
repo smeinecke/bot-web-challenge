@@ -10,6 +10,7 @@ import type {
   DetectionContext,
   DetectionResult,
   DetectionSeverity,
+  DetectionStatus,
   DetectorResults,
   DetectorSummary,
   NormalizedTestResult,
@@ -46,22 +47,50 @@ function severityRank(severity: DetectionSeverity): number {
   return rank[severity];
 }
 
+function statusRank(status: DetectionStatus): number {
+  const rank: Record<DetectionStatus, number> = {
+    'not-applicable': 0,
+    passed: 1,
+    finding: 2,
+    inconclusive: 3,
+  };
+  return rank[status];
+}
+
 /**
  * Deduplicate findings into unique scored artifacts.
  *
  * Artifact identity is `artifactId + ':' + context`. If the same artifact is
- * reported by several detectors, keep the most severe, clearest finding. The
- * raw observations are still preserved in the per-detector raw map.
+ * reported by several detectors, keep the most severe, clearest finding and
+ * record all detector IDs. The raw observations are still preserved in the
+ * per-detector raw map.
  */
 function deduplicateArtifacts(findings: DetectionResult[]): DetectionResult[] {
   const byKey = new Map<string, DetectionResult>();
 
   for (const f of findings) {
-    if (f.status === 'passed') continue;
+    if (f.status !== 'finding') continue;
     const key = `${f.artifactId}:${f.context}`;
     const existing = byKey.get(key);
     if (!existing || severityRank(f.severity) > severityRank(existing.severity)) {
       byKey.set(key, f);
+    } else if (existing && severityRank(f.severity) === severityRank(existing.severity)) {
+      // Keep the standalone one if tied, or the one with an explicit verdict impact.
+      if (f.verdictImpact === 'standalone' && existing.verdictImpact !== 'standalone') {
+        byKey.set(key, f);
+      }
+    }
+
+    // Always accumulate detector IDs for the artifact, whether or not the
+    // current finding becomes the representative one.
+    if (f.detectorId) {
+      const current = byKey.get(key);
+      if (current) {
+        const ids = new Set(current.detectorIds ?? []);
+        ids.add(f.detectorId);
+        if (current.detectorId) ids.add(current.detectorId);
+        current.detectorIds = Array.from(ids).sort();
+      }
     }
   }
 
@@ -130,10 +159,27 @@ function decideVerdict(
   allFindings: DetectionResult[],
   categoryEvidence: CategoryEvidence[]
 ): VerdictDecision {
+  // 0. Standalone strong/hard evidence is decisive on its own, regardless of
+  //    the broad automation-category classification. This allows specific
+  //    direct markers (e.g. iframe override, zero outer dimensions, real CDP
+  //    marker in a blob iframe) to remain independently conclusive.
+  const standalone = scoredArtifacts.filter(
+    a => a.status === 'finding' && a.verdictImpact === 'standalone' && (a.severity === 'strong' || a.severity === 'hard')
+  );
+  if (standalone.length > 0) {
+    const artifact = standalone.sort((a, b) => severityRank(b.severity) - severityRank(a.severity))[0];
+    return {
+      verdict: 'bot',
+      rule: `standalone:${artifact.category}:${artifact.artifactId}`,
+      score: SEVERITY_SCORE[artifact.severity],
+    };
+  }
+
   const hard = scoredArtifacts.filter(a => a.severity === 'hard');
   const strongAutomation = scoredArtifacts.filter(
     a => a.severity === 'strong' && isDirectAutomationCategory(a.category)
   );
+
   // 1. Hard evidence is conclusive.
   if (hard.length > 0) {
     const artifact = hard[0];
@@ -235,7 +281,8 @@ function decideVerdict(
  */
 function buildTests(
   rawResults: DetectorResults,
-  findings: DetectionResult[]
+  findings: DetectionResult[],
+  scoredArtifacts: DetectionResult[]
 ): Record<string, NormalizedTestResult> {
   const byDetector = new Map<string, DetectionResult[]>();
   for (const f of findings) {
@@ -248,33 +295,49 @@ function buildTests(
   const tests: Record<string, NormalizedTestResult> = {};
   for (const [detectorId, raw] of Object.entries(rawResults)) {
     const detectorFindings = byDetector.get(detectorId) ?? [];
-    const finding = detectorFindings.find(f => f.status === 'finding') ??
-      detectorFindings.find(f => f.status === 'inconclusive') ??
-      detectorFindings[0];
 
-    const status = finding?.status ?? 'passed';
-    const passed = status === 'passed';
+    // Select the most severe non-passed result for this detector. Not-applicable
+    // has lower precedence than finding/inconclusive because it means the detector
+    // could not evaluate this environment.
+    const sorted = [...detectorFindings].sort((a, b) => {
+      if (a.status === 'finding' && b.status !== 'finding') return -1;
+      if (b.status === 'finding' && a.status !== 'finding') return 1;
+      if (a.status === 'finding' && b.status === 'finding') {
+        return severityRank(b.severity) - severityRank(a.severity);
+      }
+      return statusRank(b.status) - statusRank(a.status);
+    });
+    const primary = sorted[0];
+
+    const status: DetectionStatus = primary?.status ?? 'passed';
+    const passed = status === 'passed' || status === 'not-applicable';
 
     // Use the most severe result for the per-detector display; if all passed,
     // the helper status is 'info'.
-    let severity: DetectionSeverity = finding?.severity ?? 'info';
-    if (status === 'passed') severity = 'info';
+    let severity: DetectionSeverity = primary?.severity ?? 'info';
+    if (status === 'passed' || status === 'not-applicable') severity = 'info';
 
-    const scoreContribution = detectorFindings
-      .filter(f => f.status === 'finding' && f.severity !== 'info')
-      .reduce((sum, f) => sum + SEVERITY_SCORE[f.severity], 0);
+    // Score contribution is derived from the deduplicated artifacts that this
+    // detector reported. If the detector reported a finding that was merged into
+    // a shared artifact, it still receives that artifact's contribution.
+    const contributedArtifacts = scoredArtifacts.filter(a =>
+      a.detectorId === detectorId || (a.detectorIds?.includes(detectorId))
+    );
+    const scoreContribution = contributedArtifacts
+      .filter(a => a.status === 'finding' && a.severity !== 'info')
+      .reduce((sum, a) => sum + SEVERITY_SCORE[a.severity], 0);
 
     tests[detectorId] = {
       status,
       passed,
       severity,
-      category: finding?.category,
-      artifactId: finding?.artifactId,
-      context: finding?.context,
+      category: primary?.category,
+      artifactId: primary?.artifactId,
+      context: primary?.context,
       countsAsIndicator: status === 'finding' && severity !== 'info',
       scoreContribution,
       value: raw,
-      description: (finding?.description) ?? null,
+      description: (primary?.description) ?? null,
       findings: detectorFindings,
     };
   }
@@ -307,6 +370,7 @@ export function summarizeResults(
   let passedCount = 0;
   let findingCount = 0;
   let inconclusiveCount = 0;
+  let notApplicableCount = 0;
 
   for (const f of findings) {
     if (f.status === 'passed') {
@@ -315,16 +379,48 @@ export function summarizeResults(
     } else if (f.status === 'inconclusive') {
       inconclusiveCount++;
       counts.info++;
+    } else if (f.status === 'not-applicable') {
+      notApplicableCount++;
+      counts.info++;
     } else {
       findingCount++;
       counts[f.severity]++;
     }
   }
 
-  const criticalResults = findings.filter(f => f.critical);
-  const criticalTotal = criticalResults.length;
-  const criticalInconclusive = criticalResults.filter(f => f.status === 'inconclusive').length;
-  const criticalCompleted = criticalTotal - criticalInconclusive;
+  // Coverage is grouped by detector ID, not by individual finding. A detector is
+  // complete when it has no inconclusive required (non-not-applicable) results.
+  const byDetector = new Map<string, DetectionResult[]>();
+  for (const f of findings) {
+    if (!f.detectorId) continue;
+    const list = byDetector.get(f.detectorId) ?? [];
+    list.push(f);
+    byDetector.set(f.detectorId, list);
+  }
+
+  let criticalTotal = 0;
+  let criticalCompleted = 0;
+  let criticalInconclusive = 0;
+  let criticalNotApplicable = 0;
+
+  for (const [_, list] of byDetector) {
+    const primary = list.find(f => f.critical);
+    if (!primary) continue;
+    criticalTotal++;
+    const hasInconclusive = list.some(f => f.critical && f.status === 'inconclusive');
+    const allNotApplicable = list.every(f => f.critical && f.status === 'not-applicable');
+    if (hasInconclusive) {
+      criticalInconclusive++;
+    } else if (allNotApplicable) {
+      criticalNotApplicable++;
+      // Count not-applicable critical detectors as completed for coverage, because
+      // they cannot run in this environment/mode.
+      criticalCompleted++;
+    } else {
+      criticalCompleted++;
+    }
+  }
+
   const coverage = criticalTotal > 0 ? criticalCompleted / criticalTotal : 1;
 
   const uniqueEvidenceCount = scoredArtifacts.filter(
@@ -337,6 +433,7 @@ export function summarizeResults(
     passed: passedCount,
     finding: findingCount,
     inconclusive: inconclusiveCount,
+    notApplicable: notApplicableCount,
     infoFindings: counts.info,
     weakFindings: counts.weak,
     mediumFindings: counts.medium,
@@ -350,6 +447,7 @@ export function summarizeResults(
     criticalChecksTotal: criticalTotal,
     criticalChecksCompleted: criticalCompleted,
     criticalChecksInconclusive: criticalInconclusive,
+    criticalChecksNotApplicable: criticalNotApplicable,
     uniqueEvidenceCount,
     independentCategoryCount,
     verdictRule: rule,
@@ -372,7 +470,7 @@ export function summarizeResults(
   }
 
   return {
-    tests: buildTests(rawResults, findings),
+    tests: buildTests(rawResults, findings, scoredArtifacts),
     findings,
     scoredArtifacts,
     summary,

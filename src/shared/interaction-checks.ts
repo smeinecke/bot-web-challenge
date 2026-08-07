@@ -6,7 +6,7 @@
  * passwords, clipboard contents, KeyboardEvent.key, or KeyboardEvent.code.
  * Only timing, event-integrity flags, and structural observations are kept.
  */
-import { finding, inconclusive, pass, type DetectionResult } from './detector-types';
+import { finding, inconclusive, notApplicable, pass, type DetectionResult } from './detector-types';
 
 export interface TrackingState {
   mouseEvents: Array<Record<string, unknown>>;
@@ -78,6 +78,8 @@ function isEmailOrPasswordInput(target: EventTarget | null): boolean {
 }
 
 export function onMouseMove(e: MouseEvent): void {
+  if (!e.isTrusted) tracking.hasUntrustedEvent = true;
+
   const now = Date.now();
   const pos = { x: e.clientX, y: e.clientY };
 
@@ -96,6 +98,7 @@ export function onMouseMove(e: MouseEvent): void {
       screenX: e.screenX,
       screenY: e.screenY,
       time: now,
+      isTrusted: e.isTrusted,
       screenMismatch,
     });
   }
@@ -213,6 +216,15 @@ export function onKeyUp(e: KeyboardEvent): void {
 export function onFormInput(e: InputEvent): void {
   if (!e.isTrusted) {
     tracking.hasUntrustedEvent = true;
+    if (tracking.inputEvents.length < MAX_EVENTS) {
+      tracking.inputEvents.push({
+        type: 'input',
+        time: Date.now(),
+        isTrusted: false,
+        inputType: e.inputType,
+        // Deliberately not storing data (actual characters).
+      });
+    }
     return;
   }
   if (isEmailOrPasswordInput(e.target)) {
@@ -222,7 +234,7 @@ export function onFormInput(e: InputEvent): void {
     tracking.inputEvents.push({
       type: 'input',
       time: Date.now(),
-      isTrusted: e.isTrusted,
+      isTrusted: true,
       inputType: e.inputType,
       // Deliberately not storing data (actual characters).
     });
@@ -230,7 +242,11 @@ export function onFormInput(e: InputEvent): void {
   tracking.lastActivityTime = Date.now();
 }
 
-export function onFormFocus(): void {
+export function onFormFocus(event: FocusEvent): void {
+  if (!event.isTrusted) {
+    tracking.hasUntrustedEvent = true;
+    return;
+  }
   tracking.hasTrustedFocus = true;
   if (!tracking.firstFocusTime) {
     tracking.firstFocusTime = Date.now();
@@ -658,12 +674,12 @@ export function analyzeAdvancedInteractionSignals(): DetectionResult {
 
 export function analyzeCDPMouseLeak(): DetectionResult {
   if (tracking.mouseEvents.length < 20) {
-    return pass(
+    return notApplicable(
       'cdp',
       'cdp:mouse-leak',
       'interaction',
       'insufficient-mouse-data',
-      'Not enough mouse events to evaluate CDP leak'
+      'Not enough mouse events to evaluate CDP leak in this interaction mode'
     );
   }
 

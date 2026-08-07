@@ -646,7 +646,7 @@ const STATIC_REGISTRY: DetectorRegistryEntry[] = [
   },
   {
     id: 'isSeleniumChromeDefault',
-    artifactId: 'cdp:selenium-default',
+    artifactId: 'automation-marker:selenium-chrome-default',
     category: 'cdp',
     context: 'main',
     critical: true,
@@ -681,7 +681,7 @@ const STATIC_REGISTRY: DetectorRegistryEntry[] = [
   },
   {
     id: 'isAutomatedWithCDP',
-    artifactId: 'cdp:global-marker',
+    artifactId: 'automation-marker:cdp-global',
     category: 'cdp',
     context: 'main',
     critical: true,
@@ -755,7 +755,7 @@ const STATIC_REGISTRY: DetectorRegistryEntry[] = [
     critical: false,
     isAsync: false,
     description: 'Browser chrome dimension anomalies',
-    defaultSeverity: 'weak',
+    defaultSeverity: 'strong',
     run: () => browserChecks.checkMissingBrowserChrome(),
   },
   {
@@ -818,14 +818,14 @@ const STATIC_REGISTRY: DetectorRegistryEntry[] = [
   },
   {
     id: 'hasBlobIframeCDPIssue',
-    artifactId: 'cdp:blob-iframe-mismatch',
+    artifactId: 'blob-iframe:inspection',
     category: 'cdp',
     context: 'blob-iframe',
     critical: true,
     isAsync: true,
     timeoutMs: 3000,
     description: 'CDP/automation leaks across blob URL iframe',
-    defaultSeverity: 'medium',
+    defaultSeverity: 'strong',
     run: () => browserChecks.checkBlobIframeCDP(),
   },
   {
@@ -841,7 +841,7 @@ const STATIC_REGISTRY: DetectorRegistryEntry[] = [
   },
   {
     id: 'isAutomatedViaStackTrace',
-    artifactId: 'prepare-stack-trace',
+    artifactId: 'prepare-stack-trace:main',
     category: 'browser-integrity',
     context: 'main',
     critical: true,
@@ -924,7 +924,7 @@ const STATIC_REGISTRY: DetectorRegistryEntry[] = [
   },
   {
     id: 'hasAutomationGlobalsExtended',
-    artifactId: 'automation-global:extended',
+    artifactId: 'automation-marker:globals',
     category: 'automation-global',
     context: 'main',
     critical: true,

@@ -167,6 +167,11 @@ header p {
     color: var(--accent-danger);
 }
 
+.value.not-applicable {
+    background-color: rgba(128, 128, 128, 0.15);
+    color: #888;
+}
+
 .value.medium {
     background-color: rgba(255, 166, 87, 0.2);
     color: #ffa657;

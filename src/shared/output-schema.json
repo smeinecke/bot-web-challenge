@@ -42,16 +42,21 @@
       "type": "object",
       "required": ["status", "severity", "category", "artifactId", "context", "reason", "description"],
       "properties": {
-        "status": { "type": "string", "enum": ["passed", "finding", "inconclusive"] },
+        "status": { "type": "string", "enum": ["passed", "finding", "inconclusive", "not-applicable"] },
         "severity": { "type": "string", "enum": ["info", "weak", "medium", "strong", "hard"] },
         "category": { "type": "string" },
         "artifactId": { "type": "string" },
         "context": { "type": "string", "enum": ["main", "iframe", "worker", "blob-iframe", "interaction"] },
         "reason": { "type": "string" },
         "description": { "type": "string" },
+        "verdictImpact": { "type": "string", "enum": ["corroborating", "standalone"] },
         "confidence": { "type": "number" },
         "evidence": { "type": "object" },
         "detectorId": { "type": "string" },
+        "detectorIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
         "critical": { "type": "boolean" },
         "raw": {}
       }
@@ -60,7 +65,7 @@
       "type": "object",
       "required": ["status", "passed", "severity", "category", "artifactId", "context", "countsAsIndicator", "scoreContribution", "value", "description"],
       "properties": {
-        "status": { "type": "string", "enum": ["passed", "finding", "inconclusive"] },
+        "status": { "type": "string", "enum": ["passed", "finding", "inconclusive", "not-applicable"] },
         "passed": { "type": "boolean" },
         "severity": { "type": "string", "enum": ["none", "info", "weak", "medium", "strong", "hard"] },
         "category": { "type": "string" },
@@ -82,10 +87,11 @@
       "properties": {
         "artifactId": { "type": "string" },
         "context": { "type": "string" },
-        "status": { "type": "string", "enum": ["passed", "finding", "inconclusive"] },
+        "status": { "type": "string", "enum": ["passed", "finding", "inconclusive", "not-applicable"] },
         "severity": { "type": "string" },
         "category": { "type": "string" },
         "scoreContribution": { "type": "number" },
+        "verdictImpact": { "type": "string", "enum": ["corroborating", "standalone"] },
         "detectorIds": {
           "type": "array",
           "items": { "type": "string" }
@@ -99,10 +105,10 @@
     "summary": {
       "type": "object",
       "required": [
-        "totalTests", "passed", "finding", "inconclusive",
+        "totalTests", "passed", "finding", "inconclusive", "notApplicable",
         "infoFindings", "weakFindings", "mediumFindings", "strongFindings", "hardFindings",
         "score", "verdict", "botDetected", "suspicious", "coverage",
-        "criticalChecksTotal", "criticalChecksCompleted", "criticalChecksInconclusive",
+        "criticalChecksTotal", "criticalChecksCompleted", "criticalChecksInconclusive", "criticalChecksNotApplicable",
         "uniqueEvidenceCount", "independentCategoryCount", "verdictRule"
       ],
       "properties": {
@@ -110,6 +116,7 @@
         "passed": { "type": "integer" },
         "finding": { "type": "integer" },
         "inconclusive": { "type": "integer" },
+        "notApplicable": { "type": "integer" },
         "infoFindings": { "type": "integer" },
         "weakFindings": { "type": "integer" },
         "mediumFindings": { "type": "integer" },
@@ -123,6 +130,7 @@
         "criticalChecksTotal": { "type": "integer" },
         "criticalChecksCompleted": { "type": "integer" },
         "criticalChecksInconclusive": { "type": "integer" },
+        "criticalChecksNotApplicable": { "type": "integer" },
         "uniqueEvidenceCount": { "type": "integer" },
         "independentCategoryCount": { "type": "integer" },
         "verdictRule": { "type": "string" }

@@ -6,6 +6,9 @@ import {
   analyzeWeakSignals,
   checkSeleniumChromeDefault,
   checkAutomatedWithCDP,
+  checkWebdriverInFrame,
+  checkIframeOverridden,
+  checkBlobIframeCDP,
 } from './browser-checks';
 import { runDetectors, getStaticDetectors } from './detector-registry';
 import { summarizeResults } from './scoring';
@@ -191,16 +194,38 @@ describe('browser checks', () => {
 
   describe('automation markers', () => {
     it('a known Selenium/CDP marker remains sufficient for bot detection', async () => {
-      (window as Record<string, unknown>).$cdc_asdjflasutopfhvcZLmcfl_ = {};
-      expect(checkSeleniumChromeDefault()).toBe(true);
-      expect(checkAutomatedWithCDP()).toBeTruthy();
+      const marker = '$cdc_asdjflasutopfhvcZLmcfl_';
+      (window as Record<string, unknown>)[marker] = {};
+
+      const selenium = checkSeleniumChromeDefault();
+      expect(selenium.some(f => f.artifactId === `automation-marker:${marker}` && f.status === 'finding')).toBe(true);
+
+      const cdp = checkAutomatedWithCDP();
+      expect(cdp.some(f => f.artifactId === `automation-marker:${marker}` && f.status === 'finding')).toBe(true);
 
       const { rawResults, findings } = await runDetectors(
         getStaticDetectors().filter(d => ['isSeleniumChromeDefault', 'isAutomatedWithCDP'].includes(d.id))
       );
       const scoring = summarizeResults(rawResults, findings);
       expect(scoring.summary.verdict).toBe('bot');
-      delete (window as Record<string, unknown>).$cdc_asdjflasutopfhvcZLmcfl_;
+      expect(scoring.summary.verdictRule).toContain('standalone');
+      delete (window as Record<string, unknown>)[marker];
+    });
+
+    it('real $cdc marker installed and run through the registry produces unique evidence', async () => {
+      const marker = '$cdc_asdjflasutopfhvcZLmcfl_';
+      (window as Record<string, unknown>)[marker] = {};
+
+      const { rawResults, findings } = await runDetectors(
+        getStaticDetectors().filter(d =>
+          ['isSeleniumChromeDefault', 'isAutomatedWithCDP', 'hasAutomationGlobalsExtended'].includes(d.id)
+        )
+      );
+      const scoring = summarizeResults(rawResults, findings);
+      expect(scoring.summary.verdict).toBe('bot');
+      expect(scoring.summary.uniqueEvidenceCount).toBe(1);
+      expect(scoring.summary.independentCategoryCount).toBe(1);
+      delete (window as Record<string, unknown>)[marker];
     });
 
     it('existing bot simulation mode still produces a bot verdict', async () => {
@@ -218,6 +243,175 @@ describe('browser checks', () => {
         delete ((navigator as unknown as Record<string, unknown>).webdriver);
       }
       delete (window as Record<string, unknown>).$cdc_asdjflasutopfhvcZLmcfl_;
+    });
+  });
+
+  describe('standalone browser-integrity evidence', () => {
+    const setDims = (outerW: number, outerH: number, innerW: number, innerH: number, fullscreen = false) => {
+      Object.defineProperty(window, 'outerWidth', { value: outerW, configurable: true });
+      Object.defineProperty(window, 'outerHeight', { value: outerH, configurable: true });
+      Object.defineProperty(window, 'innerWidth', { value: innerW, configurable: true });
+      Object.defineProperty(window, 'innerHeight', { value: innerH, configurable: true });
+      Object.defineProperty(document, 'fullscreenElement', { value: fullscreen ? document.documentElement : null, configurable: true });
+    };
+
+    it('zero outer dimensions is a standalone strong environment finding that produces bot', () => {
+      setDims(0, 0, 1200, 800, false);
+      const findings = checkMissingBrowserChrome();
+      const zero = findings.find(f => f.artifactId === 'browser-chrome:zero-outer');
+      expect(zero).toBeDefined();
+      expect(zero?.severity).toBe('strong');
+      expect(zero?.verdictImpact).toBe('standalone');
+
+      const scoring = summarizeResults({}, findings);
+      expect(scoring.summary.verdict).toBe('bot');
+      expect(scoring.summary.verdictRule).toContain('standalone');
+    });
+
+    it('outer < inner is a standalone strong environment finding that produces bot', () => {
+      setDims(1200, 700, 1200, 800, false);
+      const findings = checkMissingBrowserChrome();
+      const lt = findings.find(f => f.artifactId === 'browser-chrome:outer-lt-inner');
+      expect(lt).toBeDefined();
+      expect(lt?.severity).toBe('strong');
+      expect(lt?.verdictImpact).toBe('standalone');
+
+      const scoring = summarizeResults({}, findings);
+      expect(scoring.summary.verdict).toBe('bot');
+    });
+  });
+
+  describe('iframe integrity checks', () => {
+    it('checkWebdriverInFrame returns inconclusive when iframe contentWindow is inaccessible', () => {
+      const originalCreateElement = document.createElement;
+      const fakeIframe = originalCreateElement.call(document, 'div') as unknown as HTMLIFrameElement;
+      Object.defineProperty(fakeIframe, 'contentWindow', {
+        get: () => { throw new Error('cross-origin iframe'); },
+        configurable: true,
+      });
+
+      document.createElement = (tagName: string, options?: any) => {
+        if (tagName === 'iframe') return fakeIframe;
+        return originalCreateElement.call(document, tagName, options);
+      };
+
+      try {
+        const findings = checkWebdriverInFrame();
+        const result = findings.find(f => f.artifactId === 'webdriver:iframe-true');
+        expect(result?.status).toBe('inconclusive');
+        expect(result?.reason).toBe('iframe-inspection-failed');
+      } finally {
+        document.createElement = originalCreateElement;
+      }
+    });
+
+    it('checkIframeOverridden returns a strong standalone finding for a tampered iframe', () => {
+      const originalCreateElement = document.createElement;
+      const fakeIframe = originalCreateElement.call(document, 'div') as unknown as HTMLIFrameElement & {
+        contentWindow?: Record<string, unknown>;
+      };
+      // A contentWindow without any `navigator` property triggers the tampered
+      // iframe signal.
+      fakeIframe.contentWindow = {} as unknown as Window;
+
+      document.createElement = (tagName: string, options?: any) => {
+        if (tagName === 'iframe') return fakeIframe;
+        return originalCreateElement.call(document, tagName, options);
+      };
+
+      try {
+        const findings = checkIframeOverridden();
+        const result = findings.find(f => f.artifactId === 'iframe:overridden');
+        expect(result?.status).toBe('finding');
+        expect(result?.severity).toBe('strong');
+        expect(result?.verdictImpact).toBe('standalone');
+
+        const scoring = summarizeResults({}, findings);
+        expect(scoring.summary.verdict).toBe('bot');
+      } finally {
+        document.createElement = originalCreateElement;
+      }
+    });
+  });
+
+  describe('blob iframe CDP inspection', () => {
+    function mockBlobIframe(contentWindow: unknown) {
+      const originalCreateElement = document.createElement;
+      const originalAppendChild = document.body.appendChild;
+      const originalRemoveChild = document.body.removeChild;
+
+      // Use a plain div as a stand-in for an iframe so we can fully control
+      // `contentWindow` and `onload` without jsdom's real iframe getter.
+      const fakeIframe = originalCreateElement.call(document, 'div') as unknown as HTMLIFrameElement & {
+        contentWindow?: unknown;
+        _onload?: () => void;
+      };
+      (fakeIframe as any).contentWindow = contentWindow;
+
+      let onload: (() => void) | null = null;
+      Object.defineProperty(fakeIframe, 'onload', {
+        get: () => onload,
+        set: (handler) => { onload = handler; },
+        configurable: true,
+      });
+
+      document.createElement = (tagName: string, options?: any) => {
+        if (tagName === 'iframe') return fakeIframe;
+        return originalCreateElement.call(document, tagName, options);
+      };
+      document.body.appendChild = ((node: Node) => {
+        if (node === fakeIframe && onload) onload();
+        return node;
+      }) as typeof document.body.appendChild;
+      document.body.removeChild = ((node: Node) => node) as typeof document.body.removeChild;
+
+      return {
+        fakeIframe,
+        restore() {
+          document.createElement = originalCreateElement;
+          document.body.appendChild = originalAppendChild;
+          document.body.removeChild = originalRemoveChild;
+        },
+      };
+    }
+
+    it('blob iframe with a real $cdc marker produces a bot verdict', async () => {
+      const marker = '$cdc_asdjflasutopfhvcZLmcfl_';
+      const blobWin = {
+        navigator: {
+          webdriver: false,
+          userAgent: navigator.userAgent,
+          languages: navigator.languages,
+        },
+        [marker]: {},
+      };
+
+      const { restore } = mockBlobIframe(blobWin);
+      try {
+        const findings = await checkBlobIframeCDP();
+        const markerFinding = findings.find(f => f.artifactId === `automation-marker:${marker}`);
+        expect(markerFinding?.status).toBe('finding');
+        expect(markerFinding?.severity).toBe('strong');
+        expect(markerFinding?.verdictImpact).toBe('standalone');
+
+        const scoring = summarizeResults({}, findings);
+        expect(scoring.summary.verdict).toBe('bot');
+        expect(scoring.summary.verdictRule).toContain('standalone');
+      } finally {
+        restore();
+      }
+    });
+
+    it('blob iframe inspection failure produces an inconclusive result', async () => {
+      const { restore } = mockBlobIframe(undefined);
+      try {
+        const findings = await checkBlobIframeCDP();
+        const result = findings.find(f => f.artifactId === 'blob-iframe:inspection');
+        expect(result?.status).toBe('inconclusive');
+        expect(['load-error', 'no-content-window', 'timeout', 'inspection-error']).toContain(result?.reason);
+      } finally {
+        restore();
+      }
     });
   });
 });
