@@ -17,6 +17,19 @@ import {
 import { runDetectors, getStaticDetectors } from './detector-registry';
 import { summarizeResults } from './scoring';
 
+function makeNativeLikePermissionStatus(state: 'granted' | 'denied' | 'prompt') {
+  // Build an object that satisfies the invariants of a native PermissionStatus
+  // without depending on the global constructor being present or constructible.
+  const proto = Object.create(null);
+  proto.constructor = function PermissionStatus() {};
+  const status = Object.create(proto) as Record<string, unknown>;
+  Object.defineProperty(status, Symbol.toStringTag, { value: 'PermissionStatus', configurable: true });
+  status.state = state;
+  status.onchange = null;
+  status.addEventListener = () => {};
+  return status as unknown as EventTarget & { state: string; onchange: null };
+}
+
 describe('browser checks', () => {
   describe('webdriver detection', () => {
     let originalDescriptor: PropertyDescriptor | undefined;
@@ -301,14 +314,27 @@ describe('browser checks', () => {
       function apiFn(id: string) {
         return modifiedIds.has(id) ? makeNonNativeFn() : makeNativeFn();
       }
+
+      function getterFn(id: string) {
+        return { get: apiFn(id) };
+      }
+
+      const navProto: Record<string, unknown> = {};
+      Object.defineProperty(navProto, 'userAgentData', getterFn('Navigator.prototype.userAgentData'));
+      Object.defineProperty(navProto, 'language', getterFn('Navigator.prototype.language'));
+      Object.defineProperty(navProto, 'languages', getterFn('Navigator.prototype.languages'));
+
       return {
         console: { log: apiFn('console.log') },
         Worker: apiFn('window.Worker'),
-        navigator: {},
-        speechSynthesis: undefined,
-        WebGLRenderingContext: undefined,
-        WebGL2RenderingContext: undefined,
-        Navigator: { prototype: {} },
+        navigator: {
+          permissions: { query: apiFn('navigator.permissions.query') },
+          mediaDevices: { enumerateDevices: apiFn('navigator.mediaDevices.enumerateDevices') },
+        },
+        speechSynthesis: { getVoices: apiFn('speechSynthesis.getVoices') },
+        WebGLRenderingContext: { prototype: { getParameter: apiFn('WebGLRenderingContext.prototype.getParameter') } },
+        WebGL2RenderingContext: { prototype: { getParameter: apiFn('WebGL2RenderingContext.prototype.getParameter') } },
+        Navigator: { prototype: navProto },
       } as Record<string, unknown>;
     }
 
@@ -410,10 +436,129 @@ describe('browser checks', () => {
         cleanup();
       }
     });
+
+    it('one high-value modified runtime API is medium', async () => {
+      const originalWorker = window.Worker;
+      (window as Record<string, unknown>).Worker = function FakeWorker() {} as unknown as typeof Worker;
+      const fakeWindow = makeFakeWindow(new Set(['window.Worker']));
+      const cleanup = withFakeIframe(fakeWindow);
+
+      try {
+        const result = await checkRuntimeAPIIntegrity();
+        expect(result).not.toBe(false);
+        if (result !== false) {
+          expect(result.severity).toBe('medium');
+          expect((result.scoredAPIs as Array<{ id: string }>).map((s) => s.id)).toContain('window.Worker');
+        }
+      } finally {
+        if (originalWorker) {
+          (window as Record<string, unknown>).Worker = originalWorker;
+        } else {
+          delete (window as Record<string, unknown>).Worker;
+        }
+        cleanup();
+      }
+    });
+
+    it('two high-value modified runtime APIs are strong', async () => {
+      const originalLog = console.log;
+      const originalWorker = window.Worker;
+      const originalPermissions = navigator.permissions;
+      const originalLanguagesGet = Object.getOwnPropertyDescriptor(Navigator.prototype, 'languages');
+
+      Object.defineProperty(console, 'log', { value: makeNativeFn(), configurable: true, writable: true });
+      (window as Record<string, unknown>).Worker = function FakeWorker() {} as unknown as typeof Worker;
+      Object.defineProperty(navigator, 'permissions', {
+        configurable: true,
+        value: { query: function FakePermissionsQuery() {} },
+      });
+      Object.defineProperty(Navigator.prototype, 'languages', {
+        configurable: true,
+        get: function FakeLanguagesGetter() { return []; },
+      });
+
+      const fakeWindow = makeFakeWindow(new Set(['window.Worker', 'navigator.permissions.query']));
+      const cleanup = withFakeIframe(fakeWindow);
+
+      try {
+        const result = await checkRuntimeAPIIntegrity();
+        expect(result).not.toBe(false);
+        if (result !== false) {
+          expect(result.severity).toBe('strong');
+          const scoredIds = (result.scoredAPIs as Array<{ id: string }>).map((s) => s.id);
+          expect(scoredIds).toContain('window.Worker');
+          expect(scoredIds).toContain('navigator.permissions.query');
+        }
+      } finally {
+        Object.defineProperty(console, 'log', { value: originalLog, configurable: true, writable: true });
+        if (originalWorker) {
+          (window as Record<string, unknown>).Worker = originalWorker;
+        } else {
+          delete (window as Record<string, unknown>).Worker;
+        }
+        if (originalPermissions) {
+          Object.defineProperty(navigator, 'permissions', { configurable: true, value: originalPermissions });
+        } else {
+          delete (navigator as unknown as Record<string, unknown>).permissions;
+        }
+        if (originalLanguagesGet) {
+          Object.defineProperty(Navigator.prototype, 'languages', originalLanguagesGet);
+        } else {
+          delete (Navigator.prototype as unknown as Record<string, unknown>).languages;
+        }
+        cleanup();
+      }
+    });
+
+    it('three high-value modified runtime APIs can become hard', async () => {
+      const originalWorker = window.Worker;
+      const originalPermissions = navigator.permissions;
+      const originalUserAgentDataGet = Object.getOwnPropertyDescriptor(Navigator.prototype, 'userAgentData');
+
+      (window as Record<string, unknown>).Worker = function FakeWorker() {} as unknown as typeof Worker;
+      Object.defineProperty(navigator, 'permissions', {
+        configurable: true,
+        value: { query: function FakePermissionsQuery() {} },
+      });
+      Object.defineProperty(Navigator.prototype, 'userAgentData', {
+        configurable: true,
+        get: function FakeUserAgentDataGetter() { return {}; },
+      });
+
+      const fakeWindow = makeFakeWindow(new Set(['window.Worker', 'navigator.permissions.query', 'Navigator.prototype.userAgentData']));
+      const cleanup = withFakeIframe(fakeWindow);
+
+      try {
+        const result = await checkRuntimeAPIIntegrity();
+        expect(result).not.toBe(false);
+        if (result !== false) {
+          expect(result.severity).toBe('hard');
+          const scoredIds = (result.scoredAPIs as Array<{ id: string }>).map((s) => s.id);
+          expect(scoredIds.length).toBeGreaterThanOrEqual(3);
+        }
+      } finally {
+        if (originalWorker) {
+          (window as Record<string, unknown>).Worker = originalWorker;
+        } else {
+          delete (window as Record<string, unknown>).Worker;
+        }
+        if (originalPermissions) {
+          Object.defineProperty(navigator, 'permissions', { configurable: true, value: originalPermissions });
+        } else {
+          delete (navigator as unknown as Record<string, unknown>).permissions;
+        }
+        if (originalUserAgentDataGet) {
+          Object.defineProperty(Navigator.prototype, 'userAgentData', originalUserAgentDataGet);
+        } else {
+          delete (Navigator.prototype as unknown as Record<string, unknown>).userAgentData;
+        }
+        cleanup();
+      }
+    });
   });
 
   describe('Permissions API semantics', () => {
-    it('detects a fake PermissionStatus plain object', async () => {
+    it('detects a fake PermissionStatus plain object as medium', async () => {
       const originalUA = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
       const originalPermissions = Object.getOwnPropertyDescriptor(navigator, 'permissions');
       const originalNotification = globalThis.Notification;
@@ -444,7 +589,46 @@ describe('browser checks', () => {
         );
         expect(fake).toBeDefined();
         expect(fake?.status).toBe('finding');
-        expect(fake?.severity).toBe('strong');
+        expect(fake?.severity).toBe('medium');
+      } finally {
+        if (originalUA) Object.defineProperty(navigator, 'userAgent', originalUA);
+        if (originalPermissions) Object.defineProperty(navigator, 'permissions', originalPermissions);
+        (globalThis as Record<string, unknown>).Notification = originalNotification;
+        if (originalLocation) Object.defineProperty(window, 'location', originalLocation);
+      }
+    });
+
+    it('treats a native-looking PermissionStatus as no finding', async () => {
+      const originalUA = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+      const originalPermissions = Object.getOwnPropertyDescriptor(navigator, 'permissions');
+      const originalNotification = globalThis.Notification;
+      const originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
+
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36',
+        configurable: true,
+      });
+      Object.defineProperty(navigator, 'permissions', {
+        configurable: true,
+        value: {
+          query: async () => makeNativeLikePermissionStatus('prompt'),
+        },
+      });
+      (globalThis as Record<string, unknown>).Notification = { permission: 'prompt' };
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: { protocol: 'https:', hostname: 'localhost', href: 'https://localhost/' },
+      });
+
+      try {
+        const results = await checkPermissionsConsistency();
+        // A native-looking object should not produce a scored result-integrity finding.
+        if (results) {
+          const integrity = (results as import('./detector-types').DetectionResult[]).find(
+            (f) => f.artifactId === 'permissions:result-integrity'
+          );
+          expect(integrity).toBeUndefined();
+        }
       } finally {
         if (originalUA) Object.defineProperty(navigator, 'userAgent', originalUA);
         if (originalPermissions) Object.defineProperty(navigator, 'permissions', originalPermissions);
@@ -462,6 +646,82 @@ describe('browser checks', () => {
         expect(result).toBe(false);
       } finally {
         if (original) Object.defineProperty(navigator, 'permissions', original);
+      }
+    });
+
+    it('query rejection is inconclusive, not bot evidence', async () => {
+      const originalUA = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+      const originalPermissions = Object.getOwnPropertyDescriptor(navigator, 'permissions');
+      const originalNotification = globalThis.Notification;
+      const originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
+
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36',
+        configurable: true,
+      });
+      Object.defineProperty(navigator, 'permissions', {
+        configurable: true,
+        value: {
+          query: async () => { throw new Error('permission denied'); },
+        },
+      });
+      (globalThis as Record<string, unknown>).Notification = { permission: 'prompt' };
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: { protocol: 'https:', hostname: 'localhost', href: 'https://localhost/' },
+      });
+
+      try {
+        const result = await checkPermissionsConsistency();
+        expect(result).toBeTruthy();
+        expect(Array.isArray(result)).toBe(true);
+        const inconclusive = (result as import('./detector-types').DetectionResult[]).find(
+          (f) => f.status === 'inconclusive'
+        );
+        expect(inconclusive).toBeDefined();
+      } finally {
+        if (originalUA) Object.defineProperty(navigator, 'userAgent', originalUA);
+        if (originalPermissions) Object.defineProperty(navigator, 'permissions', originalPermissions);
+        (globalThis as Record<string, unknown>).Notification = originalNotification;
+        if (originalLocation) Object.defineProperty(window, 'location', originalLocation);
+      }
+    });
+
+    it('notification permission mismatch remains independent evidence', async () => {
+      const originalUA = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+      const originalPermissions = Object.getOwnPropertyDescriptor(navigator, 'permissions');
+      const originalNotification = globalThis.Notification;
+      const originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
+
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36',
+        configurable: true,
+      });
+      Object.defineProperty(navigator, 'permissions', {
+        configurable: true,
+        value: {
+          query: async () => makeNativeLikePermissionStatus('prompt'),
+        },
+      });
+      (globalThis as Record<string, unknown>).Notification = { permission: 'granted' };
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: { protocol: 'https:', hostname: 'localhost', href: 'https://localhost/' },
+      });
+
+      try {
+        const results = await checkPermissionsConsistency();
+        expect(results).toBeTruthy();
+        const mismatch = (results as import('./detector-types').DetectionResult[]).find(
+          (f) => f.artifactId === 'permissions:notification'
+        );
+        expect(mismatch).toBeDefined();
+        expect(mismatch?.status).toBe('finding');
+      } finally {
+        if (originalUA) Object.defineProperty(navigator, 'userAgent', originalUA);
+        if (originalPermissions) Object.defineProperty(navigator, 'permissions', originalPermissions);
+        (globalThis as Record<string, unknown>).Notification = originalNotification;
+        if (originalLocation) Object.defineProperty(window, 'location', originalLocation);
       }
     });
   });
@@ -505,7 +765,7 @@ describe('browser checks', () => {
   });
 
   describe('high-entropy User-Agent Client Hints', () => {
-    it('detects an impossible full-version mismatch as hard evidence', async () => {
+    it('detects an impossible full-version mismatch as medium evidence', async () => {
       const originalUA = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
       const originalUAData = Object.getOwnPropertyDescriptor(navigator, 'userAgentData');
 
@@ -533,8 +793,40 @@ describe('browser checks', () => {
         expect(result).not.toBe(false);
         if (result !== false) {
           expect(result.artifactId).toBe('client-hints:high-entropy');
-          expect(result.severity).toBe('hard');
+          expect(result.severity).toBe('medium');
         }
+      } finally {
+        if (originalUA) Object.defineProperty(navigator, 'userAgent', originalUA);
+        if (originalUAData) Object.defineProperty(navigator, 'userAgentData', originalUAData);
+      }
+    });
+
+    it('coherent high-entropy Client Hints values produce no finding', async () => {
+      const originalUA = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+      const originalUAData = Object.getOwnPropertyDescriptor(navigator, 'userAgentData');
+
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36',
+        configurable: true,
+      });
+      Object.defineProperty(navigator, 'userAgentData', {
+        configurable: true,
+        value: {
+          brands: [{ brand: 'Chrome', version: '120' }],
+          platform: 'Windows',
+          mobile: false,
+          getHighEntropyValues: async () => ({
+            fullVersionList: [{ brand: 'Chrome', version: '120.0.0.0' }],
+            architecture: 'x86_64',
+            bitness: '64',
+            model: '',
+          }),
+        },
+      });
+
+      try {
+        const result = await checkHighEntropyClientHintsCoherence();
+        expect(result).toBe(false);
       } finally {
         if (originalUA) Object.defineProperty(navigator, 'userAgent', originalUA);
         if (originalUAData) Object.defineProperty(navigator, 'userAgentData', originalUAData);

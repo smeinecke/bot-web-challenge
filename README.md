@@ -63,22 +63,21 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 | `hasCanvasAvailabilityIssue` | Validates canvas API availability |
 | `hasAudioFingerprintIssue` | Detects headless audio output |
 | `hasInconsistentClientHints` | Checks low-entropy User-Agent Client Hints consistency |
-| `hasHighEntropyClientHintsCoherence` | Checks high-entropy User-Agent Client Hints coherence |
+| `hasHighEntropyClientHintsCoherence` | Checks high-entropy User-Agent Client Hints coherence (contradictions are medium) |
 | `hasInconsistentGPUFeatures` | Detects software rendering |
 | `hasWebGLWebGPUCoherence` | Compares WebGL and WebGPU adapter information |
 | `isIframeOverridden` | Detects anti-detection scripts |
 | `hasBlobIframeCDPIssue` | Detects CDP/automation leaks via blob URL iframe |
-| `hasInconsistentWorkerValues` | Compares main/worker context values |
 | `isAutomatedWithCDPInWebWorker` | Detects CDP markers in Web Workers |
-| `hasCrossRealmInconsistency` | Cross-realm consistency (main, iframe, blob, worker, shared worker) with realm-aware probes |
+| `hasCrossRealmInconsistency` | Cross-realm consistency (main, iframe, blob, worker, SharedWorker) with realm-aware probes including low-entropy Client Hints |
 | `hasHighHardwareConcurrency` | Detects VM/cloud environments (>16 cores) |
 | `hasHeadlessChromeDefaultScreenResolution` | Detects headless resolutions |
 | `hasMissingBrowserChrome` | Validates `outerWidth/outerHeight` vs `innerWidth/innerHeight` |
 | `hasSuspiciousWeakSignals` | Collective weak signal analysis |
 | `hasNavigatorIntegrityViolation` | Inspects navigator property descriptors for tampering |
-| `hasRuntimeAPIIntegrityViolation` | Detects non-native runtime API tampering |
-| `hasPermissionsInconsistency` | Checks Permissions API state and PermissionStatus object integrity |
-| `hasMediaDeviceInfoIntegrity` | Validates MediaDeviceInfo object semantics |
+| `hasRuntimeAPIIntegrityViolation` | Detects non-native runtime API tampering, scored by high/low diagnostic value |
+| `hasPermissionsInconsistency` | Checks Permissions API state and validates PermissionStatus object integrity |
+| `hasMediaDeviceInfoIntegrity` | Validates MediaDeviceInfo object semantics and property descriptors |
 | `hasSyntheticEventTrustedInvariant` | Verifies synthetic `Event.isTrusted` is always `false` |
 
 > **Important Note on Weak Signals**

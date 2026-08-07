@@ -136,6 +136,20 @@ const NAVIGATOR_TAG_EXPR = `(() => {
   }
 })()`;
 
+const USER_AGENT_DATA_EXPR = `(() => {
+  try {
+    const uad = navigator.userAgentData;
+    if (!uad) return { _notApplicable: true };
+    return JSON.stringify({
+      brands: uad.brands,
+      platform: uad.platform,
+      mobile: uad.mobile,
+    });
+  } catch (e) {
+    return { _error: e.message };
+  }
+})()`;
+
 export const DEFAULT_PROBES: CrossRealmProbe[] = [
   {
     id: 'navigator:userAgent',
@@ -168,6 +182,14 @@ export const DEFAULT_PROBES: CrossRealmProbe[] = [
     realms: ['main', 'same-origin-iframe', 'blob-iframe', 'worker', 'shared-worker'],
     expr: 'navigator.hardwareConcurrency',
     description: 'navigator.hardwareConcurrency',
+  },
+  {
+    id: 'navigator:userAgentData',
+    category: 'browser-integrity',
+    severity: 'medium',
+    realms: ['main', 'same-origin-iframe', 'blob-iframe', 'worker', 'shared-worker'],
+    expr: USER_AGENT_DATA_EXPR,
+    description: 'Low-entropy navigator.userAgentData',
   },
   {
     id: 'navigator:deviceMemory',
@@ -535,6 +557,7 @@ export function collectSharedWorkerObservations(probes = DEFAULT_PROBES, timeout
         if (resolved) return;
         resolved = true;
         try { URL.revokeObjectURL(blobUrl); } catch {}
+        try { worker.port.close(); } catch {}
       };
 
       const timeoutId = setTimeout(() => {

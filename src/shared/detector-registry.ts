@@ -443,36 +443,6 @@ function userAgentNormalize(value: unknown, entry: DetectorRegistryEntry): Detec
   return defaultNormalize(value, entry);
 }
 
-function workerValuesNormalize(value: unknown, entry: DetectorRegistryEntry): DetectionResult[] {
-  if (!value || typeof value !== 'object') return defaultNormalize(value, entry);
-  const obj = value as RawObjectFinding;
-  if (obj.inconclusive) {
-    return [
-      inconclusive(
-        'worker',
-        'worker:integrity',
-        'worker',
-        (obj.reason as string) ?? 'worker-inconclusive',
-        obj.description as string ?? 'Web Worker comparison could not complete'
-      ),
-    ];
-  }
-  if (obj.inconsistencies && Array.isArray(obj.inconsistencies) && obj.inconsistencies.length > 0) {
-    return [
-      finding(
-        'medium',
-        'worker',
-        'worker:integrity',
-        'worker',
-        'worker-inconsistency',
-        obj.description as string ?? 'Main/worker context values differ',
-        evidenceFromObject(obj)
-      ),
-    ];
-  }
-  return defaultNormalize(value, entry);
-}
-
 export interface DetectorRunResults {
   rawResults: DetectorResults;
   findings: DetectionResult[];
@@ -792,19 +762,6 @@ const STATIC_REGISTRY: DetectorRegistryEntry[] = [
     description: 'navigator object getters appear to be tampered',
     defaultSeverity: 'medium',
     run: () => browserChecks.checkNavigatorIntegrity(),
-  },
-  {
-    id: 'hasInconsistentWorkerValues',
-    artifactId: 'worker:integrity',
-    category: 'worker',
-    context: 'worker',
-    critical: true,
-    isAsync: true,
-    timeoutMs: 3000,
-    description: 'Main/worker context value comparison',
-    defaultSeverity: 'medium',
-    run: () => workerChecks.checkInconsistentWorkerValues(),
-    normalize: workerValuesNormalize,
   },
   {
     id: 'isAutomatedWithCDPInWebWorker',

@@ -87,17 +87,21 @@ export function checkWebdriverNull(): boolean {
 }
 
 /** Check for webdriver in iframe */
-export function checkWebdriverInFrame(): boolean {
+export function checkWebdriverInFrame(): boolean | { inconclusive: true; reason: string; description: string } {
   const iframe = document.createElement('iframe');
   iframe.style.display = 'none';
-  document.body.appendChild(iframe);
   try {
+    document.body.appendChild(iframe);
     const frameWindow = iframe.contentWindow;
     return frameWindow !== null && frameWindow.navigator.webdriver === true;
-  } catch {
-    return false;
+  } catch (e) {
+    return {
+      inconclusive: true,
+      reason: 'iframeAccessError',
+      description: `Could not inspect iframe navigator.webdriver: ${(e as Error).message}`,
+    };
   } finally {
-    document.body.removeChild(iframe);
+    try { document.body.removeChild(iframe); } catch {}
   }
 }
 
@@ -686,8 +690,8 @@ export function checkAutomatedWithCDP(): { marker: string; description: string }
 export function checkIframeOverridden(): { reason: string; description: string } | false {
   const iframe = document.createElement('iframe');
   iframe.style.display = 'none';
-  document.body.appendChild(iframe);
   try {
+    document.body.appendChild(iframe);
     const contentWindow = iframe.contentWindow;
 
     if (contentWindow && !('navigator' in contentWindow)) {
@@ -699,10 +703,10 @@ export function checkIframeOverridden(): { reason: string; description: string }
     }
 
     return false;
-  } catch {
-    return false;
+  } catch (e) {
+    return { reason: 'exception', description: `Iframe inspection failed: ${(e as Error).message}` };
   } finally {
-    document.body.removeChild(iframe);
+    try { document.body.removeChild(iframe); } catch {}
   }
 }
 
@@ -973,20 +977,52 @@ function isReliablePermissionOrigin(): boolean {
          window.location.hostname === '127.0.0.1';
 }
 
-function looksLikeNativePermissionStatus(status: PermissionStatus): { looksNative: boolean; tag: string; constructorName: string; hasAddEventListener: boolean } {
+interface PermissionStatusIntegrity extends Record<string, unknown> {
+  looksNative: boolean;
+  tag: string;
+  constructorName: string;
+  hasAddEventListener: boolean;
+  hasOnchange: boolean;
+  onchangeIsOwn: boolean;
+  stateValid: boolean;
+  stateIsOwn: boolean;
+  isInstanceOf: boolean;
+}
+
+function looksLikeNativePermissionStatus(status: unknown): PermissionStatusIntegrity {
   const Constructor = typeof PermissionStatus !== 'undefined' ? PermissionStatus : null;
   const tag = Object.prototype.toString.call(status);
   const proto = Object.getPrototypeOf(status);
   const constructorName = proto && proto.constructor && proto.constructor.name ? proto.constructor.name : '';
   const hasAddEventListener = typeof (status as EventTarget & { addEventListener?: unknown }).addEventListener === 'function';
+  const hasOnchange = typeof status === 'object' && status !== null && 'onchange' in status;
+  const onchangeDesc = typeof status === 'object' && status !== null ? Object.getOwnPropertyDescriptor(status, 'onchange') : undefined;
+  const onchangeIsOwn = !!onchangeDesc;
+  const stateValue = (status as { state?: unknown }).state;
+  const stateValid = typeof stateValue === 'string' && ['granted', 'denied', 'prompt'].includes(stateValue);
+  const stateDesc = typeof status === 'object' && status !== null ? Object.getOwnPropertyDescriptor(status, 'state') : undefined;
+  const stateIsOwn = !!stateDesc;
+  const isInstanceOf = !!Constructor && status instanceof Constructor;
 
   const looksNative =
     tag === '[object PermissionStatus]' &&
     constructorName === 'PermissionStatus' &&
     hasAddEventListener &&
-    (!Constructor || status instanceof Constructor);
+    (!Constructor || isInstanceOf) &&
+    hasOnchange &&
+    stateValid;
 
-  return { looksNative, tag, constructorName, hasAddEventListener };
+  return {
+    looksNative,
+    tag,
+    constructorName,
+    hasAddEventListener,
+    hasOnchange,
+    onchangeIsOwn,
+    stateValid,
+    stateIsOwn,
+    isInstanceOf,
+  };
 }
 
 /** Check permissions consistency and PermissionStatus object integrity */
@@ -1020,7 +1056,14 @@ export async function checkPermissionsConsistency(): Promise<DetectionResult[] |
 
       const integrity = looksLikeNativePermissionStatus(permissionStatus);
       if (!integrity.looksNative) {
-        const severity = integrity.tag === '[object Object]' ? 'strong' : 'medium';
+        // Plain/fabricated result objects are medium. Subtle browser-specific
+        // descriptor differences are informational and not scored.
+        const PermissionStatusCtor = typeof PermissionStatus !== 'undefined' ? PermissionStatus : null;
+        const isPlainlyFabricated =
+          integrity.tag === '[object Object]' ||
+          integrity.constructorName !== 'PermissionStatus' ||
+          (PermissionStatusCtor !== null && !integrity.isInstanceOf);
+        const severity: 'medium' | 'info' = isPlainlyFabricated ? 'medium' : 'info';
         findings.push(
           finding(
             severity,
@@ -1034,9 +1077,17 @@ export async function checkPermissionsConsistency(): Promise<DetectionResult[] |
         );
       }
     }
-  } catch {
-    // Unsupported/blocked Permissions APIs are N/A, not bot evidence.
-    return false;
+  } catch (e) {
+    // Query rejection or exception is a measurement failure, not bot evidence.
+    return [
+      inconclusive(
+        'permissions',
+        'permissions:query',
+        'main',
+        'permissions-query-error',
+        `Permissions API query failed: ${(e as Error).message}`
+      ),
+    ];
   }
 
   if (findings.length > 0) {
@@ -1556,12 +1607,35 @@ function buildRuntimeAPIEntries(root: Record<string, unknown>): RuntimeAPIEntry[
 
   const Nav = root.Navigator as { prototype?: Record<string, unknown> } | undefined;
   if (Nav?.prototype) {
-    entries.push({
-      id: 'Navigator.prototype.userAgentData',
-      obj: Nav.prototype as unknown as object,
-      prop: 'userAgentData',
-      fn: () => Object.getOwnPropertyDescriptor(Nav.prototype, 'userAgentData')?.get,
-    });
+    const userAgentDataDesc = Object.getOwnPropertyDescriptor(Nav.prototype, 'userAgentData');
+    if (typeof userAgentDataDesc?.get === 'function') {
+      entries.push({
+        id: 'Navigator.prototype.userAgentData',
+        obj: Nav.prototype as unknown as object,
+        prop: 'userAgentData',
+        fn: () => userAgentDataDesc.get,
+      });
+    }
+
+    const languageDesc = Object.getOwnPropertyDescriptor(Nav.prototype, 'language');
+    if (typeof languageDesc?.get === 'function') {
+      entries.push({
+        id: 'Navigator.prototype.language',
+        obj: Nav.prototype as unknown as object,
+        prop: 'language',
+        fn: () => languageDesc.get,
+      });
+    }
+
+    const languagesDesc = Object.getOwnPropertyDescriptor(Nav.prototype, 'languages');
+    if (typeof languagesDesc?.get === 'function') {
+      entries.push({
+        id: 'Navigator.prototype.languages',
+        obj: Nav.prototype as unknown as object,
+        prop: 'languages',
+        fn: () => languagesDesc.get,
+      });
+    }
   }
 
   return entries;
@@ -1600,6 +1674,31 @@ function inspectRuntimeAPIs(root: Record<string, unknown>): RuntimeAPIModificati
   return suspicious;
 }
 
+const HIGH_VALUE_RUNTIME_API_IDS = new Set([
+  'window.Worker',
+  'Navigator.prototype.language',
+  'Navigator.prototype.languages',
+  'navigator.permissions.query',
+  'navigator.mediaDevices.enumerateDevices',
+  'WebGLRenderingContext.prototype.getParameter',
+  'WebGL2RenderingContext.prototype.getParameter',
+  'Navigator.prototype.userAgentData',
+]);
+
+function isHighValueRuntimeAPI(id: string): boolean {
+  return HIGH_VALUE_RUNTIME_API_IDS.has(id);
+}
+
+function computeRuntimeAPISeverity(scoredAPIs: RuntimeAPIModification[]): 'medium' | 'strong' | 'hard' {
+  const highCount = scoredAPIs.filter((m) => isHighValueRuntimeAPI(m.id)).length;
+  const lowCount = scoredAPIs.length - highCount;
+
+  if (highCount === 0) return 'medium'; // any number of low-value APIs
+  if (highCount === 1) return lowCount > 0 ? 'strong' : 'medium';
+  if (highCount === 2) return 'strong';
+  return 'hard';
+}
+
 /**
  * Check runtime API integrity by comparing the main realm against a pristine
  * same-origin about:blank iframe.
@@ -1621,7 +1720,7 @@ export function checkRuntimeAPIIntegrity(): Promise<Record<string, unknown> | fa
 
     try {
       if (typeof document === 'undefined') {
-        resolve(false);
+        resolve({ inconclusive: true, reason: 'noDocument', description: 'Runtime API integrity requires a DOM' });
         return;
       }
 
@@ -1633,7 +1732,7 @@ export function checkRuntimeAPIIntegrity(): Promise<Record<string, unknown> | fa
       const win = iframe.contentWindow as Record<string, unknown> | null | undefined;
       if (!win) {
         cleanup();
-        resolve(false);
+        resolve({ inconclusive: true, reason: 'iframeAccessError', description: 'Could not access pristine iframe contentWindow' });
         return;
       }
 
@@ -1679,23 +1778,23 @@ export function checkRuntimeAPIIntegrity(): Promise<Record<string, unknown> | fa
         return;
       }
 
-      const scoredCount = both.length + iframeOnly.length;
-      const severity: 'medium' | 'strong' | 'hard' =
-        scoredCount === 1 ? 'medium' : scoredCount === 2 ? 'strong' : 'hard';
+      const scoredAPIs = [...both, ...iframeOnly];
+      const severity = computeRuntimeAPISeverity(scoredAPIs);
 
       resolve({
         artifactId: 'runtime-api:integrity',
         category: 'api-integrity',
         severity,
         reason: 'runtime-api-tampering',
-        description: `${scoredCount} runtime API(s) are non-native in a pristine same-origin iframe`,
+        description: `${scoredAPIs.length} runtime API(s) are non-native in a pristine same-origin iframe`,
         both,
         mainOnly,
         iframeOnly,
+        scoredAPIs: scoredAPIs.map((m) => ({ id: m.id, highValue: isHighValueRuntimeAPI(m.id) })),
       });
-    } catch {
+    } catch (e) {
       cleanup();
-      resolve(false);
+      resolve({ inconclusive: true, reason: 'runtimeAPIException', description: `Runtime API integrity inspection failed: ${(e as Error).message}` });
     }
   });
 }
@@ -1712,8 +1811,16 @@ export async function checkMediaDeviceInfoSemantics(): Promise<DetectionResult |
       return false;
     }
 
-    const fakes: Array<{ index: number; toStringTag: string; constructorName: string; hasToJSON: boolean }> = [];
+    const fakes: Array<{
+      index: number;
+      toStringTag: string;
+      constructorName: string;
+      hasToJSON: boolean;
+      descriptors: Record<string, { present: boolean; own: boolean; writable?: boolean; enumerable?: boolean; configurable?: boolean }>;
+    }> = [];
     const globalConstructor = typeof MediaDeviceInfo !== 'undefined' ? MediaDeviceInfo : null;
+
+    const expectedProps = ['deviceId', 'groupId', 'kind', 'label'];
 
     for (let i = 0; i < devices.length; i++) {
       const d = devices[i];
@@ -1728,7 +1835,20 @@ export async function checkMediaDeviceInfoSemantics(): Promise<DetectionResult |
         (!globalConstructor || d instanceof globalConstructor);
 
       if (!looksNative) {
-        fakes.push({ index: i, toStringTag, constructorName, hasToJSON });
+        const descriptors: Record<string, { present: boolean; own: boolean; writable?: boolean; enumerable?: boolean; configurable?: boolean }> = {};
+        const record = d as unknown as Record<string, unknown>;
+        for (const p of expectedProps) {
+          const present = p in record;
+          const desc = Object.getOwnPropertyDescriptor(record, p);
+          descriptors[p] = {
+            present,
+            own: !!desc,
+            ...(desc
+              ? { writable: desc.writable, enumerable: desc.enumerable, configurable: desc.configurable }
+              : {}),
+          };
+        }
+        fakes.push({ index: i, toStringTag, constructorName, hasToJSON, descriptors });
       }
     }
 
@@ -1743,9 +1863,15 @@ export async function checkMediaDeviceInfoSemantics(): Promise<DetectionResult |
       `${fakes.length} MediaDeviceInfo entry/entries do not resemble native objects`,
       { fakes, total: devices.length }
     );
-  } catch {
-    // Permission denied or unsupported — not bot evidence.
-    return false;
+  } catch (e) {
+    // Permission denied or enumeration error — measurement failure, not bot evidence.
+    return inconclusive(
+      'api-integrity',
+      'media-devices:info-integrity',
+      'main',
+      'media-devices-access-error',
+      `Could not enumerate media devices: ${(e as Error).message}`
+    );
   }
 }
 
@@ -1793,7 +1919,7 @@ export async function checkHighEntropyClientHintsCoherence(): Promise<DetectionR
 
     if (issues.length === 0) return false;
 
-    const severity: 'medium' | 'hard' = issues.some((i) => i === 'fullVersionMajorMismatch' || i === 'architectureBitnessMismatch') ? 'hard' : 'medium';
+    const severity: 'medium' = 'medium';
 
     return finding(
       severity,
@@ -1808,9 +1934,15 @@ export async function checkHighEntropyClientHintsCoherence(): Promise<DetectionR
         highEntropy: high,
       }
     );
-  } catch {
-    // Unsupported or blocked high-entropy hints are not bot evidence.
-    return false;
+  } catch (e) {
+    // Blocked or throwing high-entropy hints are a measurement failure, not bot evidence.
+    return inconclusive(
+      'api-integrity',
+      'client-hints:high-entropy',
+      'main',
+      'high-entropy-client-hints-error',
+      `High-entropy Client Hints unavailable: ${(e as Error).message}`
+    );
   }
 }
 

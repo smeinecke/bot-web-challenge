@@ -131,4 +131,32 @@ describe('cross-realm consistency engine', () => {
     expect(webglProbe.exprByRealm?.['shared-worker']).toContain('OffscreenCanvas');
     expect(webglProbe.expr).toContain('document.createElement');
   });
+
+  it('exposes low-entropy userAgentData in SharedWorker-compatible probe set', () => {
+    const uadProbe = DEFAULT_PROBES.find((p) => p.id === 'navigator:userAgentData') as CrossRealmProbe;
+    expect(uadProbe).toBeDefined();
+    expect(uadProbe.realms).toContain('shared-worker');
+    expect(uadProbe.realms).toContain('worker');
+    expect(uadProbe.realms).toContain('main');
+  });
+
+  it('does not require DOM-only probes in SharedWorker realms', () => {
+    const screenProbe = DEFAULT_PROBES.find((p) => p.id === 'screen:width') as CrossRealmProbe;
+    expect(screenProbe.realms).not.toContain('shared-worker');
+    expect(screenProbe.realms).not.toContain('worker');
+
+    const deviceMemoryProbe = DEFAULT_PROBES.find((p) => p.id === 'navigator:deviceMemory') as CrossRealmProbe;
+    expect(deviceMemoryProbe.realms).not.toContain('shared-worker');
+    expect(deviceMemoryProbe.realms).not.toContain('worker');
+  });
+
+  it('detects mismatches across main and SharedWorker realms', () => {
+    const snapshots: RealmSnapshot[] = [
+      { realm: 'main', values: { 'navigator:languages': '[]' } },
+      { realm: 'shared-worker', values: { 'navigator:languages': '["en-US"]' } },
+    ];
+    const { mismatches } = compareSnapshots(snapshots);
+    const mismatch = mismatches.find((m) => m.probe.id === 'navigator:languages');
+    expect(mismatch).toBeDefined();
+  });
 });
