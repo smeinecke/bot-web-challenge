@@ -25,6 +25,9 @@ npm run build
 - `src/shared/detector-registry.ts` — shared registry of all detectors, normalization, and runner.
 - `src/shared/browser-checks.ts` — static browser checks (webdriver, stack-trace, chrome, etc.).
 - `src/shared/interaction-checks.ts` — interaction tracking and analysis.
+- `src/shared/behavior-features.ts` — multi-dimensional behavioral feature extraction and fusion for interaction scoring.
+- `src/shared/cross-realm.ts` — generalized cross-realm consistency engine (main, iframe, blob iframe, worker).
+- `src/shared/challenge.ts` — Lab/Challenge mode planning and randomized detector subset selection.
 - `src/shared/ui-rendering.ts` — renders `ScoringResult` to DOM using the scored severity.
 - `src/shared/json-output.ts` — builds JSON output with `findings`, `scoredArtifacts`, and `summary`.
 - `src/pages/static.ts` and `src/pages/interactions.ts` — page entry points using the registry.
@@ -37,4 +40,4 @@ npm run build
 
 ## Build Constants
 
-`vite.config.ts` injects `__SCHEMA_VERSION__` (currently `2`) and build metadata.
+`vite.config.ts` injects `__SCHEMA_VERSION__` (currently `3`) and build metadata.

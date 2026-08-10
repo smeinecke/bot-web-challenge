@@ -60,13 +60,13 @@ export const REGRESSION_FIXTURES: RegressionFixture[] = [
     expected: { verdict: 'bot', botDetected: true, uniqueEvidenceCount: 1, verdictRule: 'strong-direct:cdp:cdp:selenium-default' },
   },
   {
-    name: 'two weak same category cannot bot alone',
+    name: 'two weak same category cannot reach suspicious or bot',
     raw: { a: { reason: 'x' }, b: { reason: 'y' } },
     findings: [
       { ...finding('weak', 'browser-integrity', 'browser-integrity:x', 'main', 'x', 'Weak x'), detectorId: 'a', critical: false },
       { ...finding('weak', 'browser-integrity', 'browser-integrity:y', 'main', 'y', 'Weak y'), detectorId: 'b', critical: false },
     ],
-    expected: { verdict: 'suspicious', botDetected: false, independentCategoryCount: 1 },
+    expected: { verdict: 'human', botDetected: false, independentCategoryCount: 1, risk: 'low' },
   },
   {
     name: 'three independent weak categories corroborate to bot',
@@ -106,12 +106,12 @@ export const REGRESSION_FIXTURES: RegressionFixture[] = [
     expected: { verdict: 'bot', botDetected: true, independentCategoryCount: 3, verdictRule: 'medium-plus-weak:cdp+environment,browser-integrity' },
   },
   {
-    name: 'single weak signal (outer === inner) cannot bot alone',
+    name: 'single weak signal (outer === inner) is human, not suspicious or bot',
     raw: { a: true },
     findings: [
       { ...finding('weak', 'environment', 'browser-chrome:outer-eq-inner', 'main', 'outer-eq-inner', 'outer === inner'), detectorId: 'a', critical: false },
     ],
-    expected: { verdict: 'suspicious', botDetected: false, uniqueEvidenceCount: 1 },
+    expected: { verdict: 'human', botDetected: false, uniqueEvidenceCount: 1, risk: 'low', score: 0.5 },
   },
   {
     name: 'outer < inner is strong but a single non-automation category stays suspicious',

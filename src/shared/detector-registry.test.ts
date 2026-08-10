@@ -22,6 +22,12 @@ describe('detector registry', () => {
     expect(interactionStaticIds).toEqual(staticIds);
   });
 
+  it('legacy worker value comparison is subsumed by the cross-realm engine', () => {
+    const staticIds = getStaticDetectors().map(d => d.id);
+    expect(staticIds).not.toContain('hasInconsistentWorkerValues');
+    expect(staticIds).toContain('hasCrossRealmInconsistency');
+  });
+
   it('UI severity and scoring severity are identical', () => {
     const result: NormalizedTestResult = {
       status: 'finding',

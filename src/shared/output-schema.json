@@ -11,7 +11,7 @@
       "properties": {
         "name": { "type": "string" },
         "version": { "type": "string" },
-        "schemaVersion": { "type": "integer", "minimum": 2 },
+        "schemaVersion": { "type": "integer", "minimum": 3 },
         "buildTime": { "type": "string", "format": "date-time" },
         "gitCommit": { "type": "string" },
         "gitBranch": { "type": "string" }
@@ -46,7 +46,7 @@
         "severity": { "type": "string", "enum": ["info", "weak", "medium", "strong", "hard"] },
         "category": { "type": "string" },
         "artifactId": { "type": "string" },
-        "context": { "type": "string", "enum": ["main", "iframe", "worker", "blob-iframe", "interaction"] },
+        "context": { "type": "string", "enum": ["main", "iframe", "same-origin-iframe", "sandboxed-iframe", "blob-iframe", "worker", "shared-worker", "offscreen-canvas", "interaction"] },
         "reason": { "type": "string" },
         "description": { "type": "string" },
         "verdictImpact": { "type": "string", "enum": ["corroborating", "standalone"] },
@@ -107,7 +107,7 @@
       "required": [
         "totalTests", "passed", "finding", "inconclusive", "notApplicable",
         "infoFindings", "weakFindings", "mediumFindings", "strongFindings", "hardFindings",
-        "score", "verdict", "botDetected", "suspicious", "coverage",
+        "score", "verdict", "risk", "confidence", "botDetected", "suspicious", "coverage",
         "criticalChecksTotal", "criticalChecksCompleted", "criticalChecksInconclusive", "criticalChecksNotApplicable",
         "uniqueEvidenceCount", "independentCategoryCount", "verdictRule"
       ],
@@ -124,6 +124,8 @@
         "hardFindings": { "type": "integer" },
         "score": { "type": "number" },
         "verdict": { "type": "string", "enum": ["human", "suspicious", "bot", "unknown"] },
+        "risk": { "type": "string", "enum": ["low", "medium", "high", "confirmed"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
         "botDetected": { "type": "boolean" },
         "suspicious": { "type": "boolean" },
         "coverage": { "type": "number" },

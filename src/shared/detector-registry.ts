@@ -20,6 +20,8 @@ import { finding, inconclusive, pass } from './detector-types';
 import * as browserChecks from './browser-checks';
 import * as workerChecks from './worker-checks';
 import * as interactionChecks from './interaction-checks';
+import * as crossRealm from './cross-realm';
+import * as gpuCoherence from './gpu-coherence';
 
 export interface DetectorRegistryEntry {
   id: string;
@@ -441,36 +443,6 @@ function userAgentNormalize(value: unknown, entry: DetectorRegistryEntry): Detec
   return defaultNormalize(value, entry);
 }
 
-function workerValuesNormalize(value: unknown, entry: DetectorRegistryEntry): DetectionResult[] {
-  if (!value || typeof value !== 'object') return defaultNormalize(value, entry);
-  const obj = value as RawObjectFinding;
-  if (obj.inconclusive) {
-    return [
-      inconclusive(
-        'worker',
-        'worker:integrity',
-        'worker',
-        (obj.reason as string) ?? 'worker-inconclusive',
-        obj.description as string ?? 'Web Worker comparison could not complete'
-      ),
-    ];
-  }
-  if (obj.inconsistencies && Array.isArray(obj.inconsistencies) && obj.inconsistencies.length > 0) {
-    return [
-      finding(
-        'medium',
-        'worker',
-        'worker:integrity',
-        'worker',
-        'worker-inconsistency',
-        obj.description as string ?? 'Main/worker context values differ',
-        evidenceFromObject(obj)
-      ),
-    ];
-  }
-  return defaultNormalize(value, entry);
-}
-
 export interface DetectorRunResults {
   rawResults: DetectorResults;
   findings: DetectionResult[];
@@ -792,19 +764,6 @@ const STATIC_REGISTRY: DetectorRegistryEntry[] = [
     run: () => browserChecks.checkNavigatorIntegrity(),
   },
   {
-    id: 'hasInconsistentWorkerValues',
-    artifactId: 'worker:integrity',
-    category: 'worker',
-    context: 'worker',
-    critical: true,
-    isAsync: true,
-    timeoutMs: 3000,
-    description: 'Main/worker context value comparison',
-    defaultSeverity: 'medium',
-    run: () => workerChecks.checkInconsistentWorkerValues(),
-    normalize: workerValuesNormalize,
-  },
-  {
     id: 'isAutomatedWithCDPInWebWorker',
     artifactId: 'worker:cdp',
     category: 'cdp',
@@ -827,6 +786,18 @@ const STATIC_REGISTRY: DetectorRegistryEntry[] = [
     description: 'CDP/automation leaks across blob URL iframe',
     defaultSeverity: 'strong',
     run: () => browserChecks.checkBlobIframeCDP(),
+  },
+  {
+    id: 'hasCrossRealmInconsistency',
+    artifactId: 'cross-realm:consistency',
+    category: 'browser-integrity',
+    context: 'main',
+    critical: true,
+    isAsync: true,
+    timeoutMs: 6000,
+    description: 'Cross-realm consistency between main, iframe, blob iframe, and worker',
+    defaultSeverity: 'medium',
+    run: () => crossRealm.runCrossRealmConsistency().then(crossRealm.crossRealmMismatchesToFindings),
   },
   {
     id: 'hasSuspiciousWeakSignals',
@@ -932,6 +903,68 @@ const STATIC_REGISTRY: DetectorRegistryEntry[] = [
     description: 'Extended automation globals detected',
     defaultSeverity: 'strong',
     run: () => browserChecks.checkAutomationGlobalsExtended(),
+  },
+  {
+    id: 'hasSyntheticEventTrustedInvariant',
+    artifactId: 'event:is-trusted-invariant',
+    category: 'browser-integrity',
+    context: 'main',
+    critical: true,
+    isAsync: false,
+    description: 'Synthetic Event.isTrusted invariant',
+    defaultSeverity: 'hard',
+    run: () => browserChecks.checkSyntheticEventIsTrusted(),
+  },
+  {
+    id: 'hasRuntimeAPIIntegrityViolation',
+    artifactId: 'runtime-api:integrity',
+    category: 'api-integrity',
+    context: 'main',
+    critical: false,
+    isAsync: true,
+    timeoutMs: 3000,
+    description: 'Runtime API integrity against a pristine same-origin iframe',
+    defaultSeverity: 'medium',
+    run: () => browserChecks.checkRuntimeAPIIntegrity(),
+  },
+  {
+    id: 'hasMediaDeviceInfoIntegrity',
+    artifactId: 'media-devices:info-integrity',
+    category: 'api-integrity',
+    context: 'main',
+    critical: false,
+    isAsync: true,
+    timeoutMs: 3000,
+    description: 'MediaDeviceInfo entries do not resemble native objects',
+    defaultSeverity: 'medium',
+    run: () => browserChecks.checkMediaDeviceInfoSemantics(),
+    unsupportedPolicy: 'pass',
+  },
+  {
+    id: 'hasHighEntropyClientHintsCoherence',
+    artifactId: 'client-hints:high-entropy',
+    category: 'api-integrity',
+    context: 'main',
+    critical: false,
+    isAsync: true,
+    timeoutMs: 3000,
+    description: 'High-entropy User-Agent Client Hints coherence',
+    defaultSeverity: 'medium',
+    run: () => browserChecks.checkHighEntropyClientHintsCoherence(),
+    unsupportedPolicy: 'pass',
+  },
+  {
+    id: 'hasWebGLWebGPUCoherence',
+    artifactId: 'gpu:webgl-webgpu',
+    category: 'fingerprint',
+    context: 'main',
+    critical: false,
+    isAsync: true,
+    timeoutMs: 3000,
+    description: 'WebGL and WebGPU adapter coherence',
+    defaultSeverity: 'medium',
+    run: () => gpuCoherence.checkWebGLWebGPUCoherence(),
+    unsupportedPolicy: 'pass',
   },
 ];
 

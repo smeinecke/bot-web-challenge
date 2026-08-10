@@ -26,7 +26,7 @@ The JSON output now includes build metadata:
   "detector": {
     "name": "bot-web-challenge",
     "version": "0.1.0",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "buildTime": "2026-04-30T12:34:56.000Z",
     "gitCommit": "abc1234",
     "gitBranch": "main"
@@ -62,15 +62,23 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 | `isAutomatedViaStackTrace` | Classifies `Error.prepareStackTrace` handlers |
 | `hasCanvasAvailabilityIssue` | Validates canvas API availability |
 | `hasAudioFingerprintIssue` | Detects headless audio output |
-| `hasInconsistentClientHints` | Checks User-Agent Data consistency |
+| `hasInconsistentClientHints` | Checks low-entropy User-Agent Client Hints consistency |
+| `hasHighEntropyClientHintsCoherence` | Checks high-entropy User-Agent Client Hints coherence (contradictions are medium) |
 | `hasInconsistentGPUFeatures` | Detects software rendering |
+| `hasWebGLWebGPUCoherence` | Compares WebGL and WebGPU adapter information |
 | `isIframeOverridden` | Detects anti-detection scripts |
 | `hasBlobIframeCDPIssue` | Detects CDP/automation leaks via blob URL iframe |
-| `hasInconsistentWorkerValues` | Compares main/worker context values |
+| `isAutomatedWithCDPInWebWorker` | Detects CDP markers in Web Workers |
+| `hasCrossRealmInconsistency` | Cross-realm consistency (main, iframe, blob, worker, SharedWorker) with realm-aware probes including low-entropy Client Hints |
 | `hasHighHardwareConcurrency` | Detects VM/cloud environments (>16 cores) |
 | `hasHeadlessChromeDefaultScreenResolution` | Detects headless resolutions |
 | `hasMissingBrowserChrome` | Validates `outerWidth/outerHeight` vs `innerWidth/innerHeight` |
 | `hasSuspiciousWeakSignals` | Collective weak signal analysis |
+| `hasNavigatorIntegrityViolation` | Inspects navigator property descriptors for tampering |
+| `hasRuntimeAPIIntegrityViolation` | Detects non-native runtime API tampering, scored by high/low diagnostic value |
+| `hasPermissionsInconsistency` | Checks Permissions API state and validates PermissionStatus object integrity |
+| `hasMediaDeviceInfoIntegrity` | Validates MediaDeviceInfo object semantics and property descriptors |
+| `hasSyntheticEventTrustedInvariant` | Verifies synthetic `Event.isTrusted` is always `false` |
 
 > **Important Note on Weak Signals**
 >
@@ -178,7 +186,7 @@ Click "Show JSON Output" or "Copy JSON" to get machine-readable results:
   "detector": {
     "name": "bot-web-challenge",
     "version": "0.1.0",
-    "schemaVersion": 2,
+    "schemaVersion": 3,
     "buildTime": "...",
     "gitCommit": "...",
     "gitBranch": "..."
@@ -198,7 +206,7 @@ Click "Show JSON Output" or "Copy JSON" to get machine-readable results:
     "isAutomatedViaStackTrace": {
       "status": "passed",
       "passed": true,
-      "severity": "none",
+      "severity": "info",
       "category": "browser-integrity",
       "artifactId": "prepare-stack-trace:main",
       "description": "Error.prepareStackTrace is native"
@@ -209,15 +217,25 @@ Click "Show JSON Output" or "Copy JSON" to get machine-readable results:
   "summary": {
     "totalTests": 30,
     "passed": 28,
-    "failed": 1,
+    "finding": 1,
     "inconclusive": 1,
-    "botDetected": true,
+    "infoFindings": 29,
+    "weakFindings": 0,
+    "mediumFindings": 0,
+    "strongFindings": 0,
+    "hardFindings": 1,
+    "score": 8,
     "verdict": "bot",
-    "verdictRule": "hard-direct",
-    "uniqueEvidenceCount": 2,
-    "independentCategoryCount": 2,
+    "risk": "confirmed",
+    "confidence": 1,
+    "botDetected": true,
+    "suspicious": false,
+    "verdictRule": "hard:webdriver:webdriver:true",
+    "uniqueEvidenceCount": 1,
+    "independentCategoryCount": 1,
     "coverage": 100,
     "criticalChecksTotal": 8,
+    "criticalChecksCompleted": 8,
     "criticalChecksInconclusive": 0
   }
 }

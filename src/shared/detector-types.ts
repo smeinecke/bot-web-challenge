@@ -11,7 +11,16 @@ export type DetectionStatus = 'passed' | 'finding' | 'inconclusive' | 'not-appli
 
 export type DetectionSeverity = 'info' | 'weak' | 'medium' | 'strong' | 'hard';
 
-export type DetectionContext = 'main' | 'iframe' | 'blob-iframe' | 'worker' | 'interaction';
+export type DetectionContext =
+  | 'main'
+  | 'iframe'
+  | 'same-origin-iframe'
+  | 'sandboxed-iframe'
+  | 'blob-iframe'
+  | 'worker'
+  | 'shared-worker'
+  | 'offscreen-canvas'
+  | 'interaction';
 
 export type DetectionCategory =
   | 'webdriver'
@@ -29,6 +38,8 @@ export type DetectionCategory =
 export type DetectionVerdict = 'human' | 'suspicious' | 'bot' | 'unknown';
 
 export type VerdictImpact = 'corroborating' | 'standalone';
+
+export type DetectionRisk = 'low' | 'medium' | 'high' | 'confirmed';
 
 /**
  * Structured evidence. Must NOT contain keyboard characters, input values,
@@ -137,6 +148,13 @@ export interface DetectorSummary {
   hardFindings: number;
   score: number;
   verdict: DetectionVerdict;
+  /**
+   * Risk assessment independent of detection coverage.
+   * `confirmed` is reserved for hard-automation evidence (e.g. `navigator.webdriver === true`).
+   */
+  risk: DetectionRisk;
+  /** 0-1 confidence in the (risk, coverage) assessment. */
+  confidence: number;
   /** Legacy boolean for consumers that expect `botDetected`. */
   botDetected: boolean;
   /** Legacy boolean for consumers that expect `suspicious`. */

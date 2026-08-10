@@ -1095,6 +1095,10 @@ export function checkNavigatorIntegrity(): Record<string, unknown> | false {
     suspicious.push('userAgentProtoGetterPatched');
   }
 
+  const langOwn = Object.getOwnPropertyDescriptor(navigator, 'languages');
+  if (langOwn && langOwn.get && !isNative(langOwn.get)) {
+    suspicious.push('languagesOwnGetterPatched');
+  }
   const langProto = Object.getOwnPropertyDescriptor(Navigator.prototype, 'languages');
   if (langProto && langProto.get && !isNative(langProto.get)) {
     suspicious.push('languagesProtoGetterPatched');
@@ -1130,42 +1134,121 @@ function isReliablePermissionOrigin(): boolean {
          window.location.hostname === '127.0.0.1';
 }
 
-/** Check permissions consistency */
-export async function checkPermissionsConsistency(): Promise<Record<string, unknown> | false> {
+interface PermissionStatusIntegrity extends Record<string, unknown> {
+  looksNative: boolean;
+  tag: string;
+  constructorName: string;
+  hasAddEventListener: boolean;
+  hasOnchange: boolean;
+  onchangeIsOwn: boolean;
+  stateValid: boolean;
+  stateIsOwn: boolean;
+  isInstanceOf: boolean;
+}
+
+function looksLikeNativePermissionStatus(status: unknown): PermissionStatusIntegrity {
+  const Constructor = typeof PermissionStatus !== 'undefined' ? PermissionStatus : null;
+  const tag = Object.prototype.toString.call(status);
+  const proto = Object.getPrototypeOf(status);
+  const constructorName = proto && proto.constructor && proto.constructor.name ? proto.constructor.name : '';
+  const hasAddEventListener = typeof (status as EventTarget & { addEventListener?: unknown }).addEventListener === 'function';
+  const hasOnchange = typeof status === 'object' && status !== null && 'onchange' in status;
+  const onchangeDesc = typeof status === 'object' && status !== null ? Object.getOwnPropertyDescriptor(status, 'onchange') : undefined;
+  const onchangeIsOwn = !!onchangeDesc;
+  const stateValue = (status as { state?: unknown }).state;
+  const stateValid = typeof stateValue === 'string' && ['granted', 'denied', 'prompt'].includes(stateValue);
+  const stateDesc = typeof status === 'object' && status !== null ? Object.getOwnPropertyDescriptor(status, 'state') : undefined;
+  const stateIsOwn = !!stateDesc;
+  const isInstanceOf = !!Constructor && status instanceof Constructor;
+
+  const looksNative =
+    tag === '[object PermissionStatus]' &&
+    constructorName === 'PermissionStatus' &&
+    hasAddEventListener &&
+    (!Constructor || isInstanceOf) &&
+    hasOnchange &&
+    stateValid;
+
+  return {
+    looksNative,
+    tag,
+    constructorName,
+    hasAddEventListener,
+    hasOnchange,
+    onchangeIsOwn,
+    stateValid,
+    stateIsOwn,
+    isInstanceOf,
+  };
+}
+
+/** Check permissions consistency and PermissionStatus object integrity */
+export async function checkPermissionsConsistency(): Promise<DetectionResult[] | false> {
   if (!navigator.permissions || typeof navigator.permissions.query !== 'function') {
     return false;
   }
 
-  const issues: Array<{ reason: string; notificationPermission: string; permissionState: string }> = [];
+  const findings: DetectionResult[] = [];
   const canCompareNotificationPermission = isChromiumLike() && isReliablePermissionOrigin();
 
-  if (typeof Notification !== 'undefined' && canCompareNotificationPermission) {
-    try {
+  try {
+    if (typeof Notification !== 'undefined' && canCompareNotificationPermission) {
       const permissionStatus = await navigator.permissions.query({ name: 'notifications' as PermissionName });
       const notificationPermission = normalizeNotificationPermission(Notification.permission);
       const permissionState = normalizeNotificationPermission(permissionStatus.state);
 
       if (notificationPermission !== permissionState) {
-        issues.push({
-          reason: 'notificationPermissionMismatch',
-          notificationPermission,
-          permissionState
-        });
+        findings.push(
+          finding(
+            'weak',
+            'permissions',
+            'permissions:notification',
+            'main',
+            'notification-permission-mismatch',
+            `Notification permission state mismatch: Notification.permission=${notificationPermission}, PermissionStatus.state=${permissionState}`,
+            { notificationPermission, permissionState }
+          )
+        );
       }
-    } catch {
-      // Firefox/private settings/extensions may reject or restrict this.
-      // Do not treat as bot evidence.
+
+      const integrity = looksLikeNativePermissionStatus(permissionStatus);
+      if (!integrity.looksNative) {
+        // Plain/fabricated result objects are medium. Subtle browser-specific
+        // descriptor differences are informational and not scored.
+        const PermissionStatusCtor = typeof PermissionStatus !== 'undefined' ? PermissionStatus : null;
+        const isPlainlyFabricated =
+          integrity.tag === '[object Object]' ||
+          integrity.constructorName !== 'PermissionStatus' ||
+          (PermissionStatusCtor !== null && !integrity.isInstanceOf);
+        const severity: 'medium' | 'info' = isPlainlyFabricated ? 'medium' : 'info';
+        findings.push(
+          finding(
+            severity,
+            'permissions',
+            'permissions:result-integrity',
+            'main',
+            'permission-status-fake',
+            'PermissionStatus result does not appear to be a native object',
+            integrity
+          )
+        );
+      }
     }
+  } catch (e) {
+    // Query rejection or exception is a measurement failure, not bot evidence.
+    return [
+      inconclusive(
+        'permissions',
+        'permissions:query',
+        'main',
+        'permissions-query-error',
+        `Permissions API query failed: ${(e as Error).message}`
+      ),
+    ];
   }
 
-  if (issues.length > 0) {
-    return {
-      reason: 'permissionsInconsistency',
-      issues,
-      weak: true,
-      severity: 'weak',
-      description: `Permission API inconsistency: ${issues.map(i => i.reason).join(', ')}`
-    };
+  if (findings.length > 0) {
+    return findings;
   }
   return false;
 }
@@ -1498,6 +1581,532 @@ export function analyzeWeakSignals(): DetectionResult[] {
 
   return results;
 }
+
+/**
+
+/** Check Event.isTrusted invariant for synthetic events */
+export function checkSyntheticEventIsTrusted(): DetectionResult[] {
+  const artifactId = 'event:is-trusted-invariant';
+  try {
+    if (typeof Event === 'undefined' || typeof EventTarget === 'undefined') {
+      return [inconclusive('browser-integrity', artifactId, 'main', 'event-api-missing', 'Event or EventTarget API is not available')];
+    }
+
+    const target = new EventTarget();
+    const eventName = 'synthetic-trusted-invariant-' + Math.random().toString(36).slice(2);
+    let observed: boolean | undefined;
+    const handler = (e: Event) => { observed = e.isTrusted; };
+    target.addEventListener(eventName, handler);
+
+    const synthetic = new Event(eventName);
+    const constructedIsTrusted = synthetic.isTrusted;
+    target.dispatchEvent(synthetic);
+    target.removeEventListener(eventName, handler);
+
+    if (constructedIsTrusted === true || observed === true) {
+      return [
+        finding(
+          'hard',
+          'browser-integrity',
+          artifactId,
+          'main',
+          'synthetic-event-reported-trusted',
+          'A script-created/dispatched Event reported isTrusted === true',
+          { constructedIsTrusted, observed }
+        )
+      ];
+    }
+
+    if (constructedIsTrusted === false && observed === false) {
+      return [
+        pass('browser-integrity', artifactId, 'main', 'synthetic-event-untrusted', 'Synthetic Event is not trusted')
+      ];
+    }
+
+    return [
+      inconclusive(
+        'browser-integrity',
+        artifactId,
+        'main',
+        'untrusted-check-incomplete',
+        'Could not determine Event.isTrusted for synthetic event',
+        { constructedIsTrusted, observed }
+      )
+    ];
+  } catch (e) {
+    return [
+      inconclusive(
+        'browser-integrity',
+        artifactId,
+        'main',
+        'exception',
+        `Synthetic event trust check failed: ${(e as Error).message}`
+      )
+    ];
+  }
+}
+
+interface RuntimeAPIModification {
+  id: string;
+  owner: 'own' | 'prototype' | 'none';
+  descriptorType: string;
+  functionName: string;
+  functionLength: number;
+  toStringPreview: string;
+  toStringHash: number;
+  toStringNative: boolean;
+}
+
+function checkOwnAndPrototype(obj: object, prop: string): PropertyDescriptor | undefined {
+  let own = Object.getOwnPropertyDescriptor(obj, prop);
+  if (own) return own;
+  let proto = Object.getPrototypeOf(obj);
+  while (proto) {
+    own = Object.getOwnPropertyDescriptor(proto, prop);
+    if (own) return own;
+    proto = Object.getPrototypeOf(proto);
+  }
+  return undefined;
+}
+
+function isNativeFunction(fn: unknown): boolean {
+  if (typeof fn !== 'function') return false;
+  try {
+    return Function.prototype.toString.call(fn).includes('[native code]');
+  } catch {
+    return false;
+  }
+}
+
+function getFunctionNameAndLength(fn: unknown): { name: string; length: number } {
+  try {
+    return { name: (fn as { name?: string }).name ?? '', length: (fn as { length?: number }).length ?? 0 };
+  } catch {
+    return { name: '', length: 0 };
+  }
+}
+
+function describeDescriptorType(desc: PropertyDescriptor | undefined): string {
+  if (!desc) return 'none';
+  if ('value' in desc) return 'data';
+  if (desc.get && desc.set) return 'accessor-get-set';
+  if (desc.get) return 'accessor-get';
+  if (desc.set) return 'accessor-set';
+  return 'other';
+}
+
+interface RuntimeAPIEntry {
+  id: string;
+  obj: object;
+  prop: string;
+  fn: () => unknown;
+}
+
+function buildRuntimeAPIEntries(root: Record<string, unknown>): RuntimeAPIEntry[] {
+  const entries: RuntimeAPIEntry[] = [];
+
+  const console = root.console as Record<string, unknown> | undefined;
+  if (console) {
+    entries.push({ id: 'console.log', obj: console, prop: 'log', fn: () => console.log });
+  }
+
+  if (root.Worker) {
+    entries.push({ id: 'window.Worker', obj: root, prop: 'Worker', fn: () => root.Worker });
+  }
+
+  const nav = root.navigator as Record<string, unknown> | undefined;
+  if (nav) {
+    const permissions = nav.permissions as Record<string, unknown> | undefined;
+    if (permissions && typeof permissions.query === 'function') {
+      entries.push({
+        id: 'navigator.permissions.query',
+        obj: permissions,
+        prop: 'query',
+        fn: () => permissions.query,
+      });
+    }
+    const mediaDevices = nav.mediaDevices as Record<string, unknown> | undefined;
+    if (mediaDevices && typeof mediaDevices.enumerateDevices === 'function') {
+      entries.push({
+        id: 'navigator.mediaDevices.enumerateDevices',
+        obj: mediaDevices,
+        prop: 'enumerateDevices',
+        fn: () => mediaDevices.enumerateDevices,
+      });
+    }
+  }
+
+  const speechSynth = root.speechSynthesis as Record<string, unknown> | undefined;
+  if (speechSynth && typeof speechSynth.getVoices === 'function') {
+    entries.push({
+      id: 'speechSynthesis.getVoices',
+      obj: speechSynth,
+      prop: 'getVoices',
+      fn: () => speechSynth.getVoices,
+    });
+  }
+
+  const webgl = root.WebGLRenderingContext as { prototype?: Record<string, unknown> } | undefined;
+  if (webgl?.prototype && typeof webgl.prototype.getParameter === 'function') {
+    entries.push({
+      id: 'WebGLRenderingContext.prototype.getParameter',
+      obj: webgl.prototype as unknown as object,
+      prop: 'getParameter',
+      fn: () => webgl.prototype?.getParameter,
+    });
+  }
+
+  const webgl2 = root.WebGL2RenderingContext as { prototype?: Record<string, unknown> } | undefined;
+  if (webgl2?.prototype && typeof webgl2.prototype.getParameter === 'function') {
+    entries.push({
+      id: 'WebGL2RenderingContext.prototype.getParameter',
+      obj: webgl2.prototype as unknown as object,
+      prop: 'getParameter',
+      fn: () => webgl2.prototype?.getParameter,
+    });
+  }
+
+  const Nav = root.Navigator as { prototype?: Record<string, unknown> } | undefined;
+  if (Nav?.prototype) {
+    const userAgentDataDesc = Object.getOwnPropertyDescriptor(Nav.prototype, 'userAgentData');
+    if (typeof userAgentDataDesc?.get === 'function') {
+      entries.push({
+        id: 'Navigator.prototype.userAgentData',
+        obj: Nav.prototype as unknown as object,
+        prop: 'userAgentData',
+        fn: () => userAgentDataDesc.get,
+      });
+    }
+
+    const languageDesc = Object.getOwnPropertyDescriptor(Nav.prototype, 'language');
+    if (typeof languageDesc?.get === 'function') {
+      entries.push({
+        id: 'Navigator.prototype.language',
+        obj: Nav.prototype as unknown as object,
+        prop: 'language',
+        fn: () => languageDesc.get,
+      });
+    }
+
+    const languagesDesc = Object.getOwnPropertyDescriptor(Nav.prototype, 'languages');
+    if (typeof languagesDesc?.get === 'function') {
+      entries.push({
+        id: 'Navigator.prototype.languages',
+        obj: Nav.prototype as unknown as object,
+        prop: 'languages',
+        fn: () => languagesDesc.get,
+      });
+    }
+  }
+
+  return entries;
+}
+
+function inspectRuntimeAPIs(root: Record<string, unknown>): RuntimeAPIModification[] {
+  const suspicious: RuntimeAPIModification[] = [];
+
+  for (const entry of buildRuntimeAPIEntries(root)) {
+    try {
+      const fn = entry.fn();
+      if (typeof fn !== 'function') continue;
+      if (isNativeFunction(fn)) continue;
+
+      const desc = checkOwnAndPrototype(entry.obj, entry.prop);
+      const ownDesc = Object.getOwnPropertyDescriptor(entry.obj, entry.prop);
+      const owner = ownDesc === desc ? 'own' : 'prototype';
+      const { name, length } = getFunctionNameAndLength(fn);
+      const source = Function.prototype.toString.call(fn);
+
+      suspicious.push({
+        id: entry.id,
+        owner,
+        descriptorType: describeDescriptorType(desc),
+        functionName: name,
+        functionLength: length,
+        toStringPreview: source.slice(0, 80).replace(/\s+/g, ' '),
+        toStringHash: hashString(source),
+        toStringNative: source.includes('[native code]'),
+      });
+    } catch {
+      // Skip APIs that cannot be inspected.
+    }
+  }
+
+  return suspicious;
+}
+
+const HIGH_VALUE_RUNTIME_API_IDS = new Set([
+  'window.Worker',
+  'Navigator.prototype.language',
+  'Navigator.prototype.languages',
+  'navigator.permissions.query',
+  'navigator.mediaDevices.enumerateDevices',
+  'WebGLRenderingContext.prototype.getParameter',
+  'WebGL2RenderingContext.prototype.getParameter',
+  'Navigator.prototype.userAgentData',
+]);
+
+function isHighValueRuntimeAPI(id: string): boolean {
+  return HIGH_VALUE_RUNTIME_API_IDS.has(id);
+}
+
+function computeRuntimeAPISeverity(scoredAPIs: RuntimeAPIModification[]): 'medium' | 'strong' | 'hard' {
+  const highCount = scoredAPIs.filter((m) => isHighValueRuntimeAPI(m.id)).length;
+  const lowCount = scoredAPIs.length - highCount;
+
+  if (highCount === 0) return 'medium'; // any number of low-value APIs
+  if (highCount === 1) return lowCount > 0 ? 'strong' : 'medium';
+  if (highCount === 2) return 'strong';
+  return 'hard';
+}
+
+/**
+ * Check runtime API integrity by comparing the main realm against a pristine
+ * same-origin about:blank iframe.
+ *
+ * APIs that are only modified in the main realm are treated as page-local
+ * instrumentation (info, not scored). APIs that are modified in the pristine
+ * iframe, or in both realms, are genuine runtime-tampering evidence.
+ */
+export function checkRuntimeAPIIntegrity(): Promise<Record<string, unknown> | false> {
+  return new Promise((resolve) => {
+    let iframe: HTMLIFrameElement | null = null;
+
+    const cleanup = () => {
+      if (!iframe) return;
+      try {
+        document.body.removeChild(iframe);
+      } catch {}
+    };
+
+    try {
+      if (typeof document === 'undefined') {
+        resolve({ inconclusive: true, reason: 'noDocument', description: 'Runtime API integrity requires a DOM' });
+        return;
+      }
+
+      iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = 'about:blank';
+      document.body.appendChild(iframe);
+
+      const win = iframe.contentWindow as Record<string, unknown> | null | undefined;
+      if (!win) {
+        cleanup();
+        resolve({ inconclusive: true, reason: 'iframeAccessError', description: 'Could not access pristine iframe contentWindow' });
+        return;
+      }
+
+      const mainMods = inspectRuntimeAPIs(globalThis as Record<string, unknown>);
+      const iframeMods = inspectRuntimeAPIs(win);
+      cleanup();
+
+      const mainById = new Map(mainMods.map((m) => [m.id, m] as const));
+      const iframeById = new Map(iframeMods.map((m) => [m.id, m] as const));
+
+      const both: RuntimeAPIModification[] = [];
+      const mainOnly: RuntimeAPIModification[] = [];
+      const iframeOnly: RuntimeAPIModification[] = [];
+
+      for (const id of mainById.keys()) {
+        if (iframeById.has(id)) {
+          both.push(mainById.get(id)!);
+        } else {
+          mainOnly.push(mainById.get(id)!);
+        }
+      }
+      for (const id of iframeById.keys()) {
+        if (!mainById.has(id)) {
+          iframeOnly.push(iframeById.get(id)!);
+        }
+      }
+
+      if (both.length === 0 && iframeOnly.length === 0) {
+        if (mainOnly.length === 0) {
+          resolve(false);
+          return;
+        }
+        resolve({
+          artifactId: 'runtime-api:integrity',
+          category: 'api-integrity',
+          severity: 'info',
+          reason: 'runtime-api-main-only',
+          description: `${mainOnly.length} runtime API(s) are non-native only in the main realm (likely page-local instrumentation)`,
+          mainOnly,
+          iframeOnly: [],
+          both: [],
+        });
+        return;
+      }
+
+      const scoredAPIs = [...both, ...iframeOnly];
+      const severity = computeRuntimeAPISeverity(scoredAPIs);
+
+      resolve({
+        artifactId: 'runtime-api:integrity',
+        category: 'api-integrity',
+        severity,
+        reason: 'runtime-api-tampering',
+        description: `${scoredAPIs.length} runtime API(s) are non-native in a pristine same-origin iframe`,
+        both,
+        mainOnly,
+        iframeOnly,
+        scoredAPIs: scoredAPIs.map((m) => ({ id: m.id, highValue: isHighValueRuntimeAPI(m.id) })),
+      });
+    } catch (e) {
+      cleanup();
+      resolve({ inconclusive: true, reason: 'runtimeAPIException', description: `Runtime API integrity inspection failed: ${(e as Error).message}` });
+    }
+  });
+}
+
+/** Check MediaDeviceInfo object semantics */
+export async function checkMediaDeviceInfoSemantics(): Promise<DetectionResult | false> {
+  if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') {
+    return false;
+  }
+
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    if (!Array.isArray(devices) || devices.length === 0) {
+      return false;
+    }
+
+    const fakes: Array<{
+      index: number;
+      toStringTag: string;
+      constructorName: string;
+      hasToJSON: boolean;
+      descriptors: Record<string, { present: boolean; own: boolean; writable?: boolean; enumerable?: boolean; configurable?: boolean }>;
+    }> = [];
+    const globalConstructor = typeof MediaDeviceInfo !== 'undefined' ? MediaDeviceInfo : null;
+
+    const expectedProps = ['deviceId', 'groupId', 'kind', 'label'];
+
+    for (let i = 0; i < devices.length; i++) {
+      const d = devices[i];
+      const toStringTag = Object.prototype.toString.call(d);
+      const proto = Object.getPrototypeOf(d);
+      const constructorName = proto && proto.constructor && proto.constructor.name ? proto.constructor.name : '';
+      const hasToJSON = typeof (d as { toJSON?: unknown }).toJSON === 'function';
+      const looksNative =
+        toStringTag === '[object MediaDeviceInfo]' &&
+        constructorName === 'MediaDeviceInfo' &&
+        hasToJSON &&
+        (!globalConstructor || d instanceof globalConstructor);
+
+      if (!looksNative) {
+        const descriptors: Record<string, { present: boolean; own: boolean; writable?: boolean; enumerable?: boolean; configurable?: boolean }> = {};
+        const record = d as unknown as Record<string, unknown>;
+        for (const p of expectedProps) {
+          const present = p in record;
+          const desc = Object.getOwnPropertyDescriptor(record, p);
+          descriptors[p] = {
+            present,
+            own: !!desc,
+            ...(desc
+              ? { writable: desc.writable, enumerable: desc.enumerable, configurable: desc.configurable }
+              : {}),
+          };
+        }
+        fakes.push({ index: i, toStringTag, constructorName, hasToJSON, descriptors });
+      }
+    }
+
+    if (fakes.length === 0) return false;
+
+    return finding(
+      'medium',
+      'api-integrity',
+      'media-devices:info-integrity',
+      'main',
+      'media-device-info-fake',
+      `${fakes.length} MediaDeviceInfo entry/entries do not resemble native objects`,
+      { fakes, total: devices.length }
+    );
+  } catch (e) {
+    // Permission denied or enumeration error — measurement failure, not bot evidence.
+    return inconclusive(
+      'api-integrity',
+      'media-devices:info-integrity',
+      'main',
+      'media-devices-access-error',
+      `Could not enumerate media devices: ${(e as Error).message}`
+    );
+  }
+}
+
+/** Check high-entropy User-Agent Client Hints coherence */
+export async function checkHighEntropyClientHintsCoherence(): Promise<DetectionResult | false> {
+  const uaData = navigator.userAgentData;
+  if (!uaData || typeof uaData.getHighEntropyValues !== 'function') {
+    return false;
+  }
+
+  try {
+    const high = await uaData.getHighEntropyValues(['architecture', 'bitness', 'platformVersion', 'fullVersionList', 'model']);
+    if (!high || typeof high !== 'object') {
+      return false;
+    }
+
+    const issues: string[] = [];
+    const ua = navigator.userAgent;
+
+    const fullVersionList = (high.fullVersionList as Array<{ brand: string; version: string }> | undefined) || [];
+    const chromeEntry = fullVersionList.find((b) => /Chrome|Chromium/.test(b.brand));
+    const uaMatch = ua.match(/(?:Chrome|Chromium)\/(\d+)/);
+    if (chromeEntry && uaMatch) {
+      const highMajor = parseInt(chromeEntry.version.split('.')[0], 10);
+      const uaMajor = parseInt(uaMatch[1], 10);
+      if (!isNaN(highMajor) && !isNaN(uaMajor) && highMajor !== uaMajor) {
+        issues.push('fullVersionMajorMismatch');
+      }
+    }
+
+    const arch = (high.architecture as string | undefined) || '';
+    const bitness = (high.bitness as string | undefined) || '';
+    if (arch && bitness) {
+      const is64Arch = /\b(x86_64|x86-64|amd64|em64t)\b/i.test(arch);
+      const is32Arch = /\b(x86|i[36]86|i686)\b/i.test(arch) && !is64Arch;
+      if ((is64Arch && bitness !== '64') || (is32Arch && bitness === '64')) {
+        issues.push('architectureBitnessMismatch');
+      }
+    }
+
+    const model = (high.model as string | undefined) || '';
+    if (model && uaData.mobile === false) {
+      issues.push('modelOnNonMobile');
+    }
+
+    if (issues.length === 0) return false;
+
+    const severity: 'medium' = 'medium';
+
+    return finding(
+      severity,
+      'api-integrity',
+      'client-hints:high-entropy',
+      'main',
+      'high-entropy-client-hints-inconsistent',
+      'High-entropy Client Hints contradict the User-Agent or low-entropy Client Hints',
+      {
+        issues,
+        lowEntropy: { brands: uaData.brands, platform: uaData.platform, mobile: uaData.mobile },
+        highEntropy: high,
+      }
+    );
+  } catch (e) {
+    // Blocked or throwing high-entropy hints are a measurement failure, not bot evidence.
+    return inconclusive(
+      'api-integrity',
+      'client-hints:high-entropy',
+      'main',
+      'high-entropy-client-hints-error',
+      `High-entropy Client Hints unavailable: ${(e as Error).message}`
+    );
+  }
+}
+
 
 /**
  * Check for CDP/automation leaks via blob URL iframe.

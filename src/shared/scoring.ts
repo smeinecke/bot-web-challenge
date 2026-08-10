@@ -9,6 +9,7 @@ import type {
   DetectionCategory,
   DetectionContext,
   DetectionResult,
+  DetectionRisk,
   DetectionSeverity,
   DetectionStatus,
   DetectorResults,
@@ -152,6 +153,17 @@ export interface VerdictDecision {
   verdict: 'human' | 'suspicious' | 'bot' | 'unknown';
   rule: string;
   score: number;
+  displayScore: number;
+}
+
+function computeDisplayScore(scoredArtifacts: DetectionResult[]): number {
+  return Math.round(
+    (scoredArtifacts
+      .filter(a => a.status === 'finding' && a.severity !== 'info')
+      .reduce((sum, a) => sum + SEVERITY_SCORE[a.severity], 0) +
+      crossContextBonus(scoredArtifacts)) *
+      10
+  ) / 10;
 }
 
 function decideVerdict(
@@ -159,6 +171,8 @@ function decideVerdict(
   allFindings: DetectionResult[],
   categoryEvidence: CategoryEvidence[]
 ): VerdictDecision {
+  const displayScore = computeDisplayScore(scoredArtifacts);
+
   // 0. Standalone strong/hard evidence is decisive on its own, regardless of
   //    the broad automation-category classification. This allows specific
   //    direct markers (e.g. iframe override, zero outer dimensions, real CDP
@@ -172,6 +186,7 @@ function decideVerdict(
       verdict: 'bot',
       rule: `standalone:${artifact.category}:${artifact.artifactId}`,
       score: SEVERITY_SCORE[artifact.severity],
+      displayScore,
     };
   }
 
@@ -187,6 +202,7 @@ function decideVerdict(
       verdict: 'bot',
       rule: `hard:${artifact.category}:${artifact.artifactId}`,
       score: SEVERITY_SCORE.hard,
+      displayScore,
     };
   }
 
@@ -197,6 +213,7 @@ function decideVerdict(
       verdict: 'bot',
       rule: `strong-direct:${artifact.category}:${artifact.artifactId}`,
       score: SEVERITY_SCORE.strong,
+      displayScore,
     };
   }
 
@@ -212,6 +229,7 @@ function decideVerdict(
       verdict: 'bot',
       rule: `two-independent-medium-categories:${mediumPlusCategories.map(c => c.category).join(',')}`,
       score: 4,
+      displayScore,
     };
   }
 
@@ -225,6 +243,7 @@ function decideVerdict(
         verdict: 'bot',
         rule: `medium-plus-weak:${mediumCat}+${independentWeak.map(w => w.category).join(',')}`,
         score: 3,
+        displayScore,
       };
     }
   }
@@ -235,28 +254,13 @@ function decideVerdict(
       verdict: 'bot',
       rule: `weak-corroboration:${weakCategories.map(w => w.category).join(',')}`,
       score: 2,
+      displayScore,
     };
   }
 
-  // Compute display score before deciding suspicious/unknown/human.
-  const displayScore = Math.round(
-    (scoredArtifacts
-      .filter(a => a.status === 'finding' && a.severity !== 'info')
-      .reduce((sum, a) => sum + SEVERITY_SCORE[a.severity], 0) +
-      crossContextBonus(scoredArtifacts)) *
-      10
-  ) / 10;
-
-  // 6. Suspicious: at least one independent finding but not enough for bot.
-  if (mediumPlusCategories.length === 1 || weakCategories.length >= 1 || displayScore >= 0.5) {
-    return {
-      verdict: 'suspicious',
-      rule: `single-category-suspicious:${categoryEvidence.map(c => c.category).join(',') || 'none'}`,
-      score: displayScore,
-    };
-  }
-
-  // 7. Unknown / reduced detection coverage when critical checks are inconclusive.
+  // 6. Unknown / reduced detection coverage when critical checks are inconclusive.
+  //    This is checked BEFORE the suspicious branch so an inconclusive critical
+  //    detector is not obscured by a weaker unrelated finding.
   const criticalInconclusive = allFindings.filter(
     f => f.critical && f.status === 'inconclusive'
   ).length;
@@ -265,15 +269,68 @@ function decideVerdict(
       verdict: 'unknown',
       rule: 'critical-inconclusive',
       score: 0,
+      displayScore,
     };
   }
 
-  // 8. No evidence of automation.
+  // 7. Suspicious: a single medium category, or weak findings from at least two
+  //    independent categories, or one medium category plus any weak corroboration.
+  if (mediumPlusCategories.length === 1) {
+    return {
+      verdict: 'suspicious',
+      rule: `single-medium-category:${mediumPlusCategories.map(c => c.category).join(',')}`,
+      score: displayScore,
+      displayScore: displayScore,
+    };
+  }
+
+  if (weakCategories.length >= 2) {
+    return {
+      verdict: 'suspicious',
+      rule: `two-weak-categories:${weakCategories.map(w => w.category).join(',')}`,
+      score: displayScore,
+      displayScore: displayScore,
+    };
+  }
+
+  // 8. No evidence of automation (a single weak finding is not enough).
   return {
     verdict: 'human',
     rule: 'no-automation-evidence',
-    score: 0,
+    score: displayScore,
+    displayScore,
   };
+}
+
+function computeRisk(
+  verdict: 'human' | 'suspicious' | 'bot' | 'unknown',
+  scoredArtifacts: DetectionResult[]
+): DetectionRisk {
+  const evidence = scoredArtifacts.filter(a => a.status === 'finding' && a.severity !== 'info');
+  const hasHard = evidence.some(a => a.severity === 'hard');
+
+  if (verdict === 'bot') {
+    // Confirmed is reserved for hard-automation evidence; other bot verdicts are high risk.
+    return hasHard ? 'confirmed' : 'high';
+  }
+
+  if (verdict === 'unknown') {
+    return 'medium';
+  }
+
+  if (verdict === 'suspicious') {
+    return 'medium';
+  }
+
+  return 'low';
+}
+
+function computeConfidence(displayScore: number, coverage: number): number {
+  // Confidence that the (risk, coverage) tuple is accurate. Full coverage with no
+  // evidence is considered high confidence; strong evidence partially compensates
+  // for reduced coverage but the formula is deliberately conservative.
+  const evidenceConfidence = Math.min(1, displayScore / SEVERITY_SCORE.hard);
+  return Math.round((coverage + (1 - coverage) * evidenceConfidence) * 100) / 100;
 }
 
 /**
@@ -358,7 +415,7 @@ export function summarizeResults(
   const scoredArtifacts = deduplicateArtifacts(findings);
   const categoryEvidence = collectCategoryEvidence(scoredArtifacts);
 
-  const { verdict, rule, score } = decideVerdict(scoredArtifacts, findings, categoryEvidence);
+  const { verdict, rule, score, displayScore } = decideVerdict(scoredArtifacts, findings, categoryEvidence);
 
   const counts = {
     info: 0,
@@ -428,6 +485,9 @@ export function summarizeResults(
   ).length;
   const independentCategoryCount = categoryEvidence.length;
 
+  const risk = computeRisk(verdict, scoredArtifacts);
+  const confidence = computeConfidence(displayScore, coverage);
+
   const summary: DetectorSummary = {
     totalTests: Object.keys(rawResults).length,
     passed: passedCount,
@@ -441,6 +501,8 @@ export function summarizeResults(
     hardFindings: counts.hard,
     score,
     verdict,
+    risk,
+    confidence,
     botDetected: verdict === 'bot',
     suspicious: verdict === 'suspicious',
     coverage: Math.round(coverage * 100),
@@ -457,16 +519,16 @@ export function summarizeResults(
   let statusText: string;
   if (verdict === 'bot') {
     statusClass = 'bot';
-    statusText = `BOT DETECTED (score: ${score})`;
+    statusText = `${risk.toUpperCase()} BOT (score: ${score}, coverage: ${Math.round(coverage * 100)}%)`;
   } else if (verdict === 'suspicious') {
     statusClass = 'pending';
-    statusText = `SUSPICIOUS (score: ${score})`;
+    statusText = `${risk.toUpperCase()} RISK / ${Math.round(coverage * 100)}% COVERAGE (score: ${score})`;
   } else if (verdict === 'unknown') {
     statusClass = 'pending';
-    statusText = `UNKNOWN / REDUCED COVERAGE (score: ${score})`;
+    statusText = `${risk.toUpperCase()} RISK / ${Math.round(coverage * 100)}% COVERAGE (reduced coverage)`;
   } else {
     statusClass = 'human';
-    statusText = 'NO AUTOMATION DETECTED';
+    statusText = `${risk.toUpperCase()} RISK / ${Math.round(coverage * 100)}% COVERAGE — no automation detected`;
   }
 
   return {
