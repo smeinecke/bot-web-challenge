@@ -9,6 +9,7 @@ import {
   buildJSONOutput,
   setJSONTextContent,
   resetWorkerTestsCache,
+  extractTimingMeasurements,
   startTracking,
   resetTracking,
   tracking,
@@ -197,6 +198,7 @@ if (document.readyState === 'loading') {
     container?.appendChild(jsonDiv);
   }
 
+  const rawResults = (window as unknown as Record<string, DetectorResults>).lastInteractionResults;
   const json = buildJSONOutput(scoring, {
     mouseEvents: tracking.mouseEvents.length,
     keyEvents: tracking.keyEvents.length,
@@ -205,7 +207,7 @@ if (document.readyState === 'loading') {
     totalKeystrokes: tracking.totalKeystrokes,
     formCompletionTime: tracking.submitTime && tracking.firstFocusTime ?
       tracking.submitTime - tracking.firstFocusTime : null,
-  });
+  }, extractTimingMeasurements(rawResults ?? {}));
 
   jsonDiv.innerHTML = `
     <h3>JSON Output (for FlareSolverr integration)</h3>
@@ -224,6 +226,7 @@ if (document.readyState === 'loading') {
     alert('Please submit the form first.');
     return;
   }
+  const rawResults = (window as unknown as Record<string, DetectorResults>).lastInteractionResults;
   const json = buildJSONOutput(scoring, {
     mouseEvents: tracking.mouseEvents.length,
     keyEvents: tracking.keyEvents.length,
@@ -232,7 +235,7 @@ if (document.readyState === 'loading') {
     totalKeystrokes: tracking.totalKeystrokes,
     formCompletionTime: tracking.submitTime && tracking.firstFocusTime ?
       tracking.submitTime - tracking.firstFocusTime : null,
-  });
+  }, extractTimingMeasurements(rawResults ?? {}));
   navigator.clipboard.writeText(JSON.stringify(json, null, 2)).then(() => {
     alert('JSON copied to clipboard!');
   }).catch(err => {

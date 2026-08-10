@@ -38,6 +38,13 @@ npm run build
 - Regression fixtures live in `src/shared/__fixtures__/regression-fixtures.ts`.
 - jsdom does not implement `HTMLCanvasElement.prototype.getContext`, so canvas/WebGL/GPU checks return `inconclusive` in tests.
 
+## Timing Integrity
+
+- `src/shared/timing-checks.ts` collects `performance.now()` tight-loop samples across main, same-origin iframe, blob iframe, worker, and shared worker.
+- Raw resolution and zero-delta counts are diagnostic only; only semantic contradictions (call-frequency inflation, non-monotonic clocks, cross-realm timing mismatches, real-delay/timeOrigin/rAF/event-timestamp drift) are scored.
+- All scored timing artifacts use `category: 'timing'` so the fusion engine treats them as one category.
+- External detector values or site-specific fingerprints are never copied; unsupported APIs are reported as not applicable rather than a pass.
+
 ## Build Constants
 
 `vite.config.ts` injects `__SCHEMA_VERSION__` (currently `3`) and build metadata.

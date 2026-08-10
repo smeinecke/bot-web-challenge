@@ -134,6 +134,9 @@ export const TEST_DESCRIPTIONS: Record<string, string> = {
   hasAdvancedBotSignals:
     'Looks for advanced interaction anomalies: synthetic (untrusted) events, clicks exactly at element center, clicks at (0,0), empty key-event codes, and unnaturally uniform keystroke intervals.',
 
+  checkTimingIntegrity:
+    'Collects performance.now() tight-loop samples across execution realms and analyzes them for call-frequency inflation, monotonicity, cross-realm coherence, real-delay clock drift, timeOrigin drift, requestAnimationFrame timestamp drift, and Event.timeStamp drift. Stock browser timing produces diagnostic data only; semantic contradictions (inflated or non-monotonic clocks, cross-realm mismatches) are scored as timing integrity findings. Unsupported or missing APIs are reported as not applicable rather than a pass.',
+
   insufficientObservationWindow:
     'Tracks whether enough interaction data has been collected to analyze behavior. If not, the result is inconclusive and prevents a clean human verdict.',
 

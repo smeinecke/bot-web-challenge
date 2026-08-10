@@ -35,9 +35,18 @@
       "items": { "$ref": "#/definitions/scoredArtifact" }
     },
     "trackingStats": { "type": ["object", "null"] },
-    "summary": { "$ref": "#/definitions/summary" }
+    "summary": { "$ref": "#/definitions/summary" },
+    "timing": { "$ref": "#/definitions/timingMeasurements" }
   },
   "definitions": {
+    "timingMeasurements": {
+      "type": "object",
+      "properties": {
+        "main": { "type": "object" },
+        "realms": { "type": "array", "items": { "type": "object" } },
+        "collectedAt": { "type": "number" }
+      }
+    },
     "detectionResult": {
       "type": "object",
       "required": ["status", "severity", "category", "artifactId", "context", "reason", "description"],

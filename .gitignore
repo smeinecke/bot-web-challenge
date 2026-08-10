@@ -26,4 +26,7 @@ Thumbs.db
 # Test coverage
 coverage/
 
+# Browser automation artifacts
+.playwright-mcp/
+
 /*.zip

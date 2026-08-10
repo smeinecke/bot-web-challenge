@@ -3,6 +3,7 @@
  */
 import { BUILD_INFO } from './build-info';
 import type { DetectorResults, DetectorSummary, ScoringResult } from './detector-types';
+import type { TimingMeasurements } from './timing-checks';
 
 export interface JSONOutput {
   detector: {
@@ -21,6 +22,7 @@ export interface JSONOutput {
   scoredArtifacts: ScoringResult['scoredArtifacts'];
   summary: DetectorSummary;
   trackingStats?: unknown;
+  timing?: TimingMeasurements;
 }
 
 /**
@@ -34,7 +36,8 @@ export function prepareJSONOutput(
   _rawResults: DetectorResults,
   findings: ScoringResult['findings'],
   summary: DetectorSummary,
-  trackingStats?: unknown
+  trackingStats?: unknown,
+  timingMeasurements?: TimingMeasurements
 ): JSONOutput {
   return {
     detector: {
@@ -53,6 +56,7 @@ export function prepareJSONOutput(
     scoredArtifacts: summary ? [] : [],
     summary,
     ...(trackingStats !== undefined ? { trackingStats } : {}),
+    ...(timingMeasurements ? { timing: timingMeasurements } : {}),
   };
 }
 
@@ -61,7 +65,8 @@ export function prepareJSONOutput(
  */
 export function buildJSONOutput(
   scoring: ScoringResult,
-  trackingStats?: unknown
+  trackingStats?: unknown,
+  timingMeasurements?: TimingMeasurements
 ): JSONOutput {
   return {
     detector: {
@@ -80,6 +85,7 @@ export function buildJSONOutput(
     scoredArtifacts: scoring.scoredArtifacts,
     summary: scoring.summary,
     ...(trackingStats !== undefined ? { trackingStats } : {}),
+    ...(timingMeasurements ? { timing: timingMeasurements } : {}),
   };
 }
 

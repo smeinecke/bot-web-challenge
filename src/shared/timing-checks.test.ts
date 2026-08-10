@@ -1,0 +1,238 @@
+import { describe, it, expect } from 'vitest';
+import {
+  computeTightLoopStats,
+  collectMainTimingSamples,
+  analyzeTimingMeasurements,
+  checkTimingIntegrity,
+  extractTimingMeasurements,
+  type TimingMeasurements,
+  type TimingRealmMeasurements,
+} from './timing-checks';
+import type { DetectionResult } from './detector-types';
+
+function stockSamples(n = 300, realStep = 0.04, quantum = 0.1): number[] {
+  const samples: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const raw = i * realStep;
+    samples.push(Math.floor(raw / quantum) * quantum);
+  }
+  return samples;
+}
+
+function patch13Samples(n = 300, realStep = 0.05, increment = 0.5): number[] {
+  const samples: number[] = [0];
+  for (let i = 1; i < n; i++) {
+    const raw = i * realStep;
+    const next = Math.max(raw, samples[i - 1] + increment);
+    samples.push(next);
+  }
+  return samples;
+}
+
+function pageOnlyOverrideSamples(n = 300, realStep = 0.05, increment = 0.2): number[] {
+  // Page-only JS override that adds a per-call increment in the main realm
+  // while workers remain stock. This produces a call-frequency inflation
+  // detectable only in the overridden realm.
+  const samples: number[] = [0];
+  for (let i = 1; i < n; i++) {
+    const raw = i * realStep;
+    const next = Math.max(raw, samples[i - 1] + increment);
+    samples.push(next);
+  }
+  return samples;
+}
+
+function nonMonotonicSamples(n = 300): number[] {
+  const samples = stockSamples(n);
+  // Create a single backward step while keeping the array non-empty.
+  samples[51] = samples[50] - 0.02;
+  return samples;
+}
+
+function workerClampedSamples(n = 300, realStep = 0.05, quantum = 0.4): number[] {
+  const samples: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const raw = i * realStep;
+    samples.push(Math.floor(raw / quantum) * quantum);
+  }
+  return samples;
+}
+
+function makeRealm(
+  realm: TimingRealmMeasurements['realm'],
+  samples: number[],
+  realStep: number
+): TimingRealmMeasurements {
+  const comparisonElapsedMs = (samples.length - 1) * realStep;
+  return {
+    realm,
+    timeOrigin: 0,
+    timeOriginCoherence: { notSupported: true },
+    tightLoop: computeTightLoopStats(samples, comparisonElapsedMs),
+  };
+}
+
+function makeMainMeasurement(
+  samples: number[],
+  realStep: number,
+  overrides: Partial<TimingRealmMeasurements> = {}
+): TimingRealmMeasurements {
+  const comparisonElapsedMs = (samples.length - 1) * realStep;
+  return {
+    realm: 'main',
+    timeOrigin: 0,
+    timeOriginCoherence: { timeOrigin: 0, nowAtCheck: comparisonElapsedMs, dateAtCheck: comparisonElapsedMs, driftMs: 0 },
+    tightLoop: computeTightLoopStats(samples, comparisonElapsedMs),
+    delay: { notSupported: true },
+    raf: { notSupported: true },
+    eventTimestamp: { notSupported: true },
+    ...overrides,
+  };
+}
+
+function scoredFindings(results: DetectionResult[]): DetectionResult[] {
+  return results.filter((f) => f.status === 'finding');
+}
+
+function findingByArtifactId(results: DetectionResult[], id: string): DetectionResult | undefined {
+  return results.find((f) => f.artifactId === id);
+}
+
+describe('computeTightLoopStats', () => {
+  it('computes the expected aggregates for a stock-like clamped sequence', () => {
+    const samples = stockSamples(100);
+    const stats = computeTightLoopStats(samples, 99 * 0.04);
+    expect(stats.sampleCount).toBe(100);
+    expect(stats.positiveDeltaCount).toBeGreaterThan(0);
+    expect(stats.zeroDeltaCount).toBeGreaterThan(0);
+    expect(stats.minPositiveDelta).toBeCloseTo(0.1, 5);
+    expect(stats.uniquePositiveDeltaCount / stats.positiveDeltaCount).toBeLessThan(0.2);
+    expect(stats.nonMonotonicDrops).toBe(0);
+  });
+
+  it('detects non-monotonic drops', () => {
+    const samples = nonMonotonicSamples(100);
+    const stats = computeTightLoopStats(samples);
+    expect(stats.nonMonotonicDrops).toBeGreaterThan(0);
+  });
+});
+
+describe('analyzeTimingMeasurements', () => {
+  it('produces no scored findings for a stock-like clamped fixture', () => {
+    const measurements: TimingMeasurements = {
+      main: makeMainMeasurement(stockSamples(300), 0.04),
+      realms: [
+        makeRealm('worker', workerClampedSamples(300, 0.04, 0.4), 0.04),
+      ],
+      collectedAt: Date.now(),
+    };
+    const analysis = analyzeTimingMeasurements(measurements);
+    expect(scoredFindings(analysis.findings)).toHaveLength(0);
+  });
+
+  it('flags old unbounded Patch 13 as call-frequency inflation', () => {
+    const measurements: TimingMeasurements = {
+      main: makeMainMeasurement(patch13Samples(300), 0.05),
+      realms: [],
+      collectedAt: Date.now(),
+    };
+    const analysis = analyzeTimingMeasurements(measurements);
+    const inflation = findingByArtifactId(analysis.findings, 'timing:call-frequency-inflation');
+    expect(inflation).toBeDefined();
+    expect(inflation?.status).toBe('finding');
+    expect(inflation?.severity).toBe('medium');
+  });
+
+  it('flags a page-only JS override as cross-realm coherence', () => {
+    const measurements: TimingMeasurements = {
+      main: makeMainMeasurement(pageOnlyOverrideSamples(300), 0.05),
+      realms: [
+        makeRealm('worker', workerClampedSamples(300, 0.05, 0.4), 0.05),
+      ],
+      collectedAt: Date.now(),
+    };
+    const analysis = analyzeTimingMeasurements(measurements);
+    const crossRealm = findingByArtifactId(analysis.findings, 'timing:cross-realm-coherence');
+    expect(crossRealm).toBeDefined();
+    expect(crossRealm?.status).toBe('finding');
+    expect(crossRealm?.severity).toBe('medium');
+
+    const inflation = findingByArtifactId(analysis.findings, 'timing:call-frequency-inflation');
+    expect(inflation).toBeDefined();
+    expect(inflation?.status).toBe('finding');
+  });
+
+  it('flags a non-monotonic fixture', () => {
+    const measurements: TimingMeasurements = {
+      main: makeMainMeasurement(nonMonotonicSamples(300), 0.04),
+      realms: [],
+      collectedAt: Date.now(),
+    };
+    const analysis = analyzeTimingMeasurements(measurements);
+    const nonMono = findingByArtifactId(analysis.findings, 'timing:non-monotonic');
+    expect(nonMono).toBeDefined();
+    expect(nonMono?.status).toBe('finding');
+  });
+
+  it('does not score a normal cross-realm resolution difference', () => {
+    const measurements: TimingMeasurements = {
+      main: makeMainMeasurement(stockSamples(300, 0.04, 0.1), 0.04),
+      realms: [
+        makeRealm('worker', workerClampedSamples(300, 0.05, 0.4), 0.05),
+      ],
+      collectedAt: Date.now(),
+    };
+    const analysis = analyzeTimingMeasurements(measurements);
+    expect(scoredFindings(analysis.findings)).toHaveLength(0);
+  });
+
+  it('reports a clean pass when no contradictions are found', () => {
+    const measurements: TimingMeasurements = {
+      main: makeMainMeasurement(stockSamples(100), 0.04),
+      realms: [],
+      collectedAt: Date.now(),
+    };
+    const analysis = analyzeTimingMeasurements(measurements);
+    expect(analysis.clean).toBe(true);
+    const pass = findingByArtifactId(analysis.findings, 'timing:integrity');
+    expect(pass?.status).toBe('passed');
+  });
+});
+
+describe('collectMainTimingSamples', () => {
+  it('returns diagnostic data in jsdom without false positives', async () => {
+    const measurements = await collectMainTimingSamples({ sampleCount: 50, delayMs: 50 });
+    expect(measurements.main.realm).toBe('main');
+    expect(measurements.main.tightLoop).toBeDefined();
+    expect(measurements.main.delay).toBeDefined();
+    expect(measurements.main.raf).toBeDefined();
+    expect(measurements.main.eventTimestamp).toBeDefined();
+
+    // Unsupported/legacy APIs must be marked not supported, not as passes.
+    expect(measurements.main.raf).toMatchObject({ notSupported: true });
+    if ('notSupported' in (measurements.main.eventTimestamp as object)) {
+      expect(measurements.main.eventTimestamp).toMatchObject({ notSupported: true });
+    } else {
+      const ev = measurements.main.eventTimestamp as { eventTimestamp: number; driftMs: number };
+      expect(Number.isFinite(ev.eventTimestamp)).toBe(true);
+      expect(Number.isFinite(ev.driftMs)).toBe(true);
+    }
+
+    const analysis = analyzeTimingMeasurements(measurements);
+    expect(scoredFindings(analysis.findings)).toHaveLength(0);
+  });
+});
+
+describe('checkTimingIntegrity integration', () => {
+  it('exposes measurements that can be extracted from raw results', async () => {
+    const { findings, measurements } = await checkTimingIntegrity();
+    expect(findings).toBeInstanceOf(Array);
+    expect(measurements.main).toBeDefined();
+    expect(measurements.collectedAt).toBeGreaterThan(0);
+
+    const rawResults = { checkTimingIntegrity: { findings, measurements } };
+    const extracted = extractTimingMeasurements(rawResults);
+    expect(extracted).toBeDefined();
+    expect(extracted?.collectedAt).toBe(measurements.collectedAt);
+  });
+});

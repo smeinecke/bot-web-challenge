@@ -33,6 +33,7 @@ export type DetectionCategory =
   | 'environment'
   | 'api-integrity'
   | 'worker'
+  | 'timing'
   | 'other';
 
 export type DetectionVerdict = 'human' | 'suspicious' | 'bot' | 'unknown';

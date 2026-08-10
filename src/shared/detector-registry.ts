@@ -22,6 +22,7 @@ import * as workerChecks from './worker-checks';
 import * as interactionChecks from './interaction-checks';
 import * as crossRealm from './cross-realm';
 import * as gpuCoherence from './gpu-coherence';
+import { checkTimingIntegrity } from './timing-checks';
 
 export interface DetectorRegistryEntry {
   id: string;
@@ -965,6 +966,18 @@ const STATIC_REGISTRY: DetectorRegistryEntry[] = [
     defaultSeverity: 'medium',
     run: () => gpuCoherence.checkWebGLWebGPUCoherence(),
     unsupportedPolicy: 'pass',
+  },
+  {
+    id: 'checkTimingIntegrity',
+    artifactId: 'timing:integrity',
+    category: 'timing',
+    context: 'main',
+    critical: false,
+    isAsync: true,
+    timeoutMs: 6000,
+    description: 'Timing integrity analysis across main, iframe, blob iframe, worker, and shared worker',
+    defaultSeverity: 'medium',
+    run: () => checkTimingIntegrity(),
   },
 ];
 

@@ -10,6 +10,7 @@ import {
   buildJSONOutput,
   setJSONTextContent,
   resetWorkerTestsCache,
+  extractTimingMeasurements,
   type DetectorResults,
 } from '../shared';
 
@@ -104,7 +105,8 @@ if (document.readyState === 'loading') {
     container?.appendChild(jsonDiv);
   }
 
-  const json = buildJSONOutput(scoring);
+  const rawResults = (window as unknown as Record<string, DetectorResults>).lastStaticResults;
+  const json = buildJSONOutput(scoring, undefined, extractTimingMeasurements(rawResults ?? {}));
   jsonDiv.innerHTML = `
     <h3>JSON Output (for FlareSolverr integration)</h3>
     <pre style="background: var(--bg-tertiary); padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.75rem; max-height: 400px; overflow-y: auto;"><code></code></pre>
@@ -122,7 +124,8 @@ if (document.readyState === 'loading') {
     alert('Results not ready yet.');
     return;
   }
-  const json = buildJSONOutput(scoring);
+  const rawResults = (window as unknown as Record<string, DetectorResults>).lastStaticResults;
+  const json = buildJSONOutput(scoring, undefined, extractTimingMeasurements(rawResults ?? {}));
   navigator.clipboard.writeText(JSON.stringify(json, null, 2)).then(() => {
     alert('JSON copied to clipboard!');
   }).catch(err => {
