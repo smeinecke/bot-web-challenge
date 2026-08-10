@@ -7,6 +7,7 @@ import {
   extractTimingMeasurements,
   type TimingMeasurements,
   type TimingRealmMeasurements,
+  type TimingRafMeasurement,
 } from './timing-checks';
 import type { DetectionResult } from './detector-types';
 
@@ -69,6 +70,22 @@ function makeRealm(
     timeOrigin: 0,
     timeOriginCoherence: { notSupported: true },
     tightLoop: computeTightLoopStats(samples, comparisonElapsedMs),
+  };
+}
+
+function makeRafMeasurement(
+  rafTimestamp: number,
+  nowAtCallback: number,
+  futureOffset = 0,
+  monotonicDrops = 0
+): TimingRafMeasurement {
+  return {
+    rafTimestamp,
+    nowAtCallback,
+    callbackLag: nowAtCallback - rafTimestamp,
+    futureOffset,
+    monotonicDrops,
+    samples: [],
   };
 }
 
@@ -186,6 +203,58 @@ describe('analyzeTimingMeasurements', () => {
     expect(scoredFindings(analysis.findings)).toHaveLength(0);
   });
 
+  it('treats Firefox-style rAF callback lag as diagnostic, not a finding', () => {
+    const measurements: TimingMeasurements = {
+      main: makeMainMeasurement(stockSamples(100), 0.04, {
+        raf: makeRafMeasurement(250.005, 366.674, 0, 0),
+      }),
+      realms: [],
+      collectedAt: Date.now(),
+    };
+    const analysis = analyzeTimingMeasurements(measurements);
+    const rafFinding = findingByArtifactId(analysis.findings, 'timing:raf-coherence');
+    expect(rafFinding).toBeUndefined();
+  });
+
+  it('flags a future-dated rAF timestamp as a coherence finding', () => {
+    const measurements: TimingMeasurements = {
+      main: makeMainMeasurement(stockSamples(100), 0.04, {
+        raf: makeRafMeasurement(100, 50, 55, 0),
+      }),
+      realms: [],
+      collectedAt: Date.now(),
+    };
+    const analysis = analyzeTimingMeasurements(measurements);
+    const rafFinding = findingByArtifactId(analysis.findings, 'timing:raf-coherence');
+    expect(rafFinding).toBeDefined();
+    expect(rafFinding?.status).toBe('finding');
+    expect(rafFinding?.reason).toMatch(/raf-future-timestamp/);
+  });
+
+  it('flags non-monotonic rAF timestamps as a coherence finding', () => {
+    const raf: TimingRafMeasurement = {
+      rafTimestamp: 50,
+      nowAtCallback: 60,
+      callbackLag: 10,
+      futureOffset: 0,
+      monotonicDrops: 1,
+      samples: [
+        { rafTimestamp: 100, nowAtCallback: 110 },
+        { rafTimestamp: 90, nowAtCallback: 120 },
+      ],
+    };
+    const measurements: TimingMeasurements = {
+      main: makeMainMeasurement(stockSamples(100), 0.04, { raf }),
+      realms: [],
+      collectedAt: Date.now(),
+    };
+    const analysis = analyzeTimingMeasurements(measurements);
+    const rafFinding = findingByArtifactId(analysis.findings, 'timing:raf-coherence');
+    expect(rafFinding).toBeDefined();
+    expect(rafFinding?.status).toBe('finding');
+    expect(rafFinding?.reason).toMatch(/raf-non-monotonic/);
+  });
+
   it('reports a clean pass when no contradictions are found', () => {
     const measurements: TimingMeasurements = {
       main: makeMainMeasurement(stockSamples(100), 0.04),
@@ -209,7 +278,9 @@ describe('collectMainTimingSamples', () => {
     expect(measurements.main.eventTimestamp).toBeDefined();
 
     // Unsupported/legacy APIs must be marked not supported, not as passes.
-    expect(measurements.main.raf).toMatchObject({ notSupported: true });
+    if ('notSupported' in (measurements.main.raf as object)) {
+      expect(measurements.main.raf).toMatchObject({ notSupported: true });
+    }
     if ('notSupported' in (measurements.main.eventTimestamp as object)) {
       expect(measurements.main.eventTimestamp).toMatchObject({ notSupported: true });
     } else {

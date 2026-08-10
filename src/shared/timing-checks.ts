@@ -63,7 +63,10 @@ export interface TimingDelayMeasurement {
 export interface TimingRafMeasurement {
   rafTimestamp: number;
   nowAtCallback: number;
-  driftMs: number;
+  callbackLag: number;
+  futureOffset: number;
+  monotonicDrops: number;
+  samples?: { rafTimestamp: number; nowAtCallback: number }[];
 }
 
 export interface TimingEventTimestampMeasurement {
@@ -122,7 +125,7 @@ export interface TimingAnalysisOptions {
   delayDriftAbsMs?: number;
   delayDriftRel?: number;
   timeOriginDriftMs?: number;
-  rafDriftMs?: number;
+  rafFutureOffsetMs?: number;
   eventTsDriftMs?: number;
 }
 
@@ -132,7 +135,7 @@ const DEFAULT_ANALYSIS_OPTIONS: Required<TimingAnalysisOptions> = {
   delayDriftAbsMs: 30,
   delayDriftRel: 0.25,
   timeOriginDriftMs: 50,
-  rafDriftMs: 100,
+  rafFutureOffsetMs: 10,
   eventTsDriftMs: 50,
 };
 
@@ -378,22 +381,82 @@ function collectRafMeasurement(): Promise<TimingRafMeasurement | NotSupportedMea
   if (typeof requestAnimationFrame !== 'function') {
     return Promise.resolve({ notSupported: true });
   }
+
   return new Promise((resolve) => {
-    requestAnimationFrame((timestamp) => {
-      const nowAtCallback = performance.now();
-      const driftMs = Math.abs(timestamp - nowAtCallback);
-      // rAF may be throttled in headless/background environments; only consider
-      // it supported when the timestamp is reasonably coherent with performance.now().
-      if (!Number.isFinite(timestamp) || driftMs > 200) {
+    let resolved = false;
+    const samples: { rafTimestamp: number; nowAtCallback: number }[] = [];
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = () => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timeoutId);
+
+      if (samples.length === 0) {
         resolve({ notSupported: true });
         return;
       }
+
+      let monotonicDrops = 0;
+      for (let i = 1; i < samples.length; i++) {
+        if (samples[i].rafTimestamp < samples[i - 1].rafTimestamp - JITTER_EPS) {
+          monotonicDrops++;
+        }
+      }
+
+      const last = samples[samples.length - 1];
+      const maxFutureOffset = samples.reduce(
+        (max, s) => Math.max(max, s.rafTimestamp - s.nowAtCallback),
+        0
+      );
+
       resolve({
-        rafTimestamp: timestamp,
-        nowAtCallback,
-        driftMs,
+        rafTimestamp: last.rafTimestamp,
+        nowAtCallback: last.nowAtCallback,
+        callbackLag: last.nowAtCallback - last.rafTimestamp,
+        futureOffset: maxFutureOffset,
+        monotonicDrops,
+        samples,
       });
-    });
+    };
+
+    const timeout = () => {
+      if (!resolved) {
+        resolved = true;
+        resolve({ notSupported: true });
+      }
+    };
+
+    // A missing or heavily throttled rAF is a capability limitation, not a
+    // coherence finding. Cap the wait so the detector remains usable in
+    // jsdom/headless environments.
+    timeoutId = setTimeout(timeout, 500);
+
+    const step = () => {
+      requestAnimationFrame((timestamp) => {
+        if (resolved) return;
+
+        if (!Number.isFinite(timestamp)) {
+          resolved = true;
+          clearTimeout(timeoutId);
+          resolve({ notSupported: true });
+          return;
+        }
+
+        samples.push({
+          rafTimestamp: timestamp,
+          nowAtCallback: performance.now(),
+        });
+
+        if (samples.length < 3) {
+          step();
+        } else {
+          finish();
+        }
+      });
+    };
+
+    step();
   });
 }
 
@@ -800,16 +863,30 @@ export function analyzeTimingMeasurements(
   if (measurements.main.raf) {
     if (isRafMeasurement(measurements.main.raf)) {
       const raf = measurements.main.raf as TimingRafMeasurement;
-      if (Math.abs(raf.driftMs) > opts.rafDriftMs) {
+      const rafReasons: string[] = [];
+
+      // A positive futureOffset means the rAF timestamp is later than
+      // performance.now() inside the callback, which contradicts the rendering
+      // order: the frame timestamp should not materially post-date the callback.
+      if (raf.futureOffset > opts.rafFutureOffsetMs) {
+        rafReasons.push('raf-future-timestamp');
+      }
+
+      // rAF timestamps must be monotonically non-decreasing across frames.
+      if (raf.monotonicDrops > 0) {
+        rafReasons.push('raf-non-monotonic');
+      }
+
+      if (rafReasons.length > 0) {
         findings.push(
           finding(
-            'weak',
+            'medium',
             'timing',
             'timing:raf-coherence',
             'main',
-            'raf-timestamp-drift',
-            'requestAnimationFrame timestamp is inconsistent with performance.now()',
-            { raf }
+            rafReasons.join('+'),
+            'requestAnimationFrame timestamp is inconsistent with the high-resolution clock',
+            { raf, rafReasons }
           )
         );
       }

@@ -1799,6 +1799,16 @@ function buildRuntimeAPIEntries(root: Record<string, unknown>): RuntimeAPIEntry[
     }
   }
 
+  const perf = root.performance as Record<string, unknown> | undefined;
+  if (perf && typeof perf.now === 'function') {
+    entries.push({
+      id: 'Performance.prototype.now',
+      obj: perf as unknown as object,
+      prop: 'now',
+      fn: () => perf.now,
+    });
+  }
+
   return entries;
 }
 
@@ -1844,6 +1854,7 @@ const HIGH_VALUE_RUNTIME_API_IDS = new Set([
   'WebGLRenderingContext.prototype.getParameter',
   'WebGL2RenderingContext.prototype.getParameter',
   'Navigator.prototype.userAgentData',
+  'Performance.prototype.now',
 ]);
 
 function isHighValueRuntimeAPI(id: string): boolean {
