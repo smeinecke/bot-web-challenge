@@ -8,6 +8,7 @@ import {
   type TimingMeasurements,
   type TimingRealmMeasurements,
   type TimingRafMeasurement,
+  type TightLoopStats,
 } from './timing-checks';
 import type { DetectionResult } from './detector-types';
 
@@ -70,6 +71,23 @@ function makeRealm(
     timeOrigin: 0,
     timeOriginCoherence: { notSupported: true },
     tightLoop: computeTightLoopStats(samples, comparisonElapsedMs),
+  };
+}
+
+function zeroComparisonStats(reportedElapsedMs: number): TightLoopStats {
+  return {
+    sampleCount: 1000,
+    reportedElapsedMs,
+    comparisonElapsedMs: 0,
+    zeroDeltaCount: 999,
+    zeroDeltaRatio: 1,
+    positiveDeltaCount: 0,
+    minPositiveDelta: 0,
+    medianPositiveDelta: 0,
+    p95PositiveDelta: 0,
+    maxPositiveDelta: 0,
+    uniquePositiveDeltaCount: 0,
+    nonMonotonicDrops: 0,
   };
 }
 
@@ -253,6 +271,34 @@ describe('analyzeTimingMeasurements', () => {
     expect(rafFinding).toBeDefined();
     expect(rafFinding?.status).toBe('finding');
     expect(rafFinding?.reason).toMatch(/raf-non-monotonic/);
+  });
+
+  it('does not inflate when both wall-clock and performance.now report zero elapsed', () => {
+    const measurements: TimingMeasurements = {
+      main: makeMainMeasurement(stockSamples(100), 0.04, {
+        tightLoop: zeroComparisonStats(0),
+      }),
+      realms: [],
+      collectedAt: Date.now(),
+    };
+    const analysis = analyzeTimingMeasurements(measurements);
+    const inflation = findingByArtifactId(analysis.findings, 'timing:call-frequency-inflation');
+    expect(inflation).toBeUndefined();
+  });
+
+  it('flags inflation when performance.now reports elapsed time while wall-clock stays at zero', () => {
+    const measurements: TimingMeasurements = {
+      main: makeMainMeasurement(stockSamples(100), 0.04, {
+        tightLoop: zeroComparisonStats(300),
+      }),
+      realms: [],
+      collectedAt: Date.now(),
+    };
+    const analysis = analyzeTimingMeasurements(measurements);
+    const inflation = findingByArtifactId(analysis.findings, 'timing:call-frequency-inflation');
+    expect(inflation).toBeDefined();
+    expect(inflation?.status).toBe('finding');
+    expect(inflation?.severity).toBe('medium');
   });
 
   it('reports a clean pass when no contradictions are found', () => {

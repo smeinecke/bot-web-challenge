@@ -251,10 +251,18 @@ function isEventTimestampMeasurement(value: unknown): value is TimingEventTimest
 }
 
 function isInflated(stats: TightLoopStats, opts: Required<TimingAnalysisOptions>): boolean {
-  if (stats.comparisonElapsedMs == null || stats.comparisonElapsedMs <= 0) {
+  if (stats.comparisonElapsedMs == null) {
     return false;
   }
+
   const excess = stats.reportedElapsedMs - stats.comparisonElapsedMs;
+
+  // If the independent wall clock did not advance a measurable tick, the only
+  // way to inflate is for performance.now() to report elapsed time anyway.
+  if (stats.comparisonElapsedMs <= 0) {
+    return stats.reportedElapsedMs > opts.inflationAbsMs;
+  }
+
   return (
     excess > opts.inflationAbsMs &&
     stats.reportedElapsedMs > stats.comparisonElapsedMs * opts.inflationRel
