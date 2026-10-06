@@ -830,13 +830,18 @@ describe('browser checks', () => {
       }
     });
 
-    it('missing optional Permissions API does not become bot evidence', async () => {
+    it('missing optional Permissions API is not applicable, not a pass', async () => {
       const original = Object.getOwnPropertyDescriptor(navigator, 'permissions');
       Object.defineProperty(navigator, 'permissions', { value: undefined, configurable: true });
 
       try {
         const result = await checkPermissionsConsistency();
-        expect(result).toBe(false);
+        expect(result).not.toBe(false);
+        if (result !== false) {
+          expect(result).toHaveLength(1);
+          expect(result[0].status).toBe('not-applicable');
+          expect(result[0].artifactId).toBe('permissions:notification');
+        }
       } finally {
         if (original) Object.defineProperty(navigator, 'permissions', original);
       }
@@ -941,7 +946,45 @@ describe('browser checks', () => {
       }
     });
 
-    it('empty media device list is not suspicious', async () => {
+    it('accepts InputDeviceInfo subclass entries (Chromium input devices)', async () => {
+      const originalDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
+      const originalCtor = Object.getOwnPropertyDescriptor(globalThis, 'MediaDeviceInfo');
+      class MediaDeviceInfo {
+        deviceId = 'x';
+        groupId = 'g';
+        kind = 'audioinput';
+        label = '';
+        toJSON() {
+          return {};
+        }
+      }
+      class InputDeviceInfo extends MediaDeviceInfo {}
+      Object.defineProperty(InputDeviceInfo.prototype, Symbol.toStringTag, {
+        configurable: true,
+        value: 'InputDeviceInfo',
+      });
+      Object.defineProperty(globalThis, 'MediaDeviceInfo', {
+        configurable: true,
+        writable: true,
+        value: MediaDeviceInfo,
+      });
+      Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        value: { enumerateDevices: async () => [new InputDeviceInfo(), new InputDeviceInfo()] },
+      });
+
+      try {
+        const result = await checkMediaDeviceInfoSemantics();
+        expect(result).toBe(false);
+      } finally {
+        if (originalDevices) Object.defineProperty(navigator, 'mediaDevices', originalDevices);
+        else delete (navigator as unknown as Record<string, unknown>).mediaDevices;
+        if (originalCtor) Object.defineProperty(globalThis, 'MediaDeviceInfo', originalCtor);
+        else delete (globalThis as Record<string, unknown>).MediaDeviceInfo;
+      }
+    });
+
+    it('empty media device list is not applicable, not a pass', async () => {
       const original = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
       Object.defineProperty(navigator, 'mediaDevices', {
         configurable: true,
@@ -950,7 +993,11 @@ describe('browser checks', () => {
 
       try {
         const result = await checkMediaDeviceInfoSemantics();
-        expect(result).toBe(false);
+        expect(result).not.toBe(false);
+        if (result !== false) {
+          expect(result.status).toBe('not-applicable');
+          expect(result.artifactId).toBe('media-devices:info-integrity');
+        }
       } finally {
         if (original) Object.defineProperty(navigator, 'mediaDevices', original);
       }
@@ -1010,7 +1057,7 @@ describe('browser checks', () => {
           mobile: false,
           getHighEntropyValues: async () => ({
             fullVersionList: [{ brand: 'Chrome', version: '120.0.0.0' }],
-            architecture: 'x86_64',
+            architecture: 'x86',
             bitness: '64',
             model: '',
           }),
@@ -1035,9 +1082,85 @@ describe('browser checks', () => {
 
       try {
         const result = await checkHighEntropyClientHintsCoherence();
-        expect(result).toBe(false);
+        expect(result).not.toBe(false);
+        if (result !== false) {
+          expect(result.status).toBe('not-applicable');
+          expect(result.artifactId).toBe('client-hints:high-entropy');
+        }
       } finally {
         if (original) Object.defineProperty(navigator, 'userAgentData', original);
+      }
+    });
+
+    it('explicit 32-bit architecture with 64-bit bitness is flagged', async () => {
+      const originalUA = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+      const originalUAData = Object.getOwnPropertyDescriptor(navigator, 'userAgentData');
+
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36',
+        configurable: true,
+      });
+      Object.defineProperty(navigator, 'userAgentData', {
+        configurable: true,
+        value: {
+          brands: [{ brand: 'Chrome', version: '120' }],
+          platform: 'Windows',
+          mobile: false,
+          getHighEntropyValues: async () => ({
+            fullVersionList: [{ brand: 'Chrome', version: '120.0.0.0' }],
+            architecture: 'i686',
+            bitness: '64',
+            model: '',
+          }),
+        },
+      });
+
+      try {
+        const result = await checkHighEntropyClientHintsCoherence();
+        expect(result).not.toBe(false);
+        if (result !== false) {
+          expect(result.status).toBe('finding');
+          expect(result.severity).toBe('medium');
+        }
+      } finally {
+        if (originalUA) Object.defineProperty(navigator, 'userAgent', originalUA);
+        if (originalUAData) Object.defineProperty(navigator, 'userAgentData', originalUAData);
+      }
+    });
+
+    it('explicit arm64 with 32-bit bitness is flagged', async () => {
+      const originalUA = Object.getOwnPropertyDescriptor(navigator, 'userAgent');
+      const originalUAData = Object.getOwnPropertyDescriptor(navigator, 'userAgentData');
+
+      Object.defineProperty(navigator, 'userAgent', {
+        value: 'Mozilla/5.0 Chrome/120.0.0.0 Safari/537.36',
+        configurable: true,
+      });
+      Object.defineProperty(navigator, 'userAgentData', {
+        configurable: true,
+        value: {
+          brands: [{ brand: 'Chrome', version: '120' }],
+          platform: 'macOS',
+          mobile: false,
+          getHighEntropyValues: async () => ({
+            fullVersionList: [{ brand: 'Chrome', version: '120.0.0.0' }],
+            architecture: 'arm64',
+            bitness: '32',
+            model: '',
+          }),
+        },
+      });
+
+      try {
+        const result = await checkHighEntropyClientHintsCoherence();
+        expect(result).not.toBe(false);
+        if (result !== false) {
+          expect(result.status).toBe('finding');
+          expect(result.severity).toBe('medium');
+        }
+      } finally {
+        if (originalUA) Object.defineProperty(navigator, 'userAgent', originalUA);
+        if (originalUAData) Object.defineProperty(navigator, 'userAgentData', originalUAData);
       }
     });
   });

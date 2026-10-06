@@ -24,10 +24,6 @@ import {
 let currentPlan: ChallengePlan | null = null;
 let currentResult: ChallengeResult | null = null;
 
-function nonceDisplay(): string {
-  return currentPlan?.nonce ?? generateChallengeNonce();
-}
-
 function updateChallengeCard(container: HTMLElement): void {
   container.innerHTML = '';
 
@@ -37,9 +33,6 @@ function updateChallengeCard(container: HTMLElement): void {
   const desc = document.createElement('p');
   desc.textContent = 'A randomized, nonce-bound detector plan is generated for each attempt. Individual detector results are hidden until the challenge completes.';
 
-  const nonceLabel = document.createElement('p');
-  nonceLabel.innerHTML = `<strong>Challenge nonce:</strong> <code>${nonceDisplay()}</code>`;
-
   const button = document.createElement('button');
   button.id = 'start-challenge';
   button.className = 'btn-primary';
@@ -48,7 +41,6 @@ function updateChallengeCard(container: HTMLElement): void {
 
   container.appendChild(heading);
   container.appendChild(desc);
-  container.appendChild(nonceLabel);
   container.appendChild(button);
 }
 
@@ -61,7 +53,8 @@ async function startChallenge(): Promise<void> {
   showLoading(container);
   resetWorkerTestsCache();
 
-  // Re-roll the nonce at the start of every attempt.
+  // A fresh nonce-bound plan is generated at the start of every attempt; the
+  // nonce is disclosed only once the attempt has a plan to bind to.
   currentPlan = buildChallengePlan(getStaticDetectors(), 'challenge', {
     seed: generateChallengeNonce(),
   });
@@ -72,7 +65,7 @@ async function startChallenge(): Promise<void> {
     currentResult = { plan: currentPlan, scoring };
     renderChallengeSummary(container);
   } catch (e) {
-    container.innerHTML = '';
+    updateChallengeCard(container);
     const errorDiv = document.createElement('div');
     errorDiv.className = 'error';
     errorDiv.textContent = `Challenge failed: ${(e as Error).message}`;
@@ -97,18 +90,34 @@ function renderChallengeSummary(container: HTMLElement): void {
   card.appendChild(heading);
 
   const nonceP = document.createElement('p');
-  nonceP.innerHTML = `<strong>Nonce:</strong> <code>${plan.nonce}</code>`;
+  const nonceStrong = document.createElement('strong');
+  nonceStrong.textContent = 'Nonce: ';
+  const nonceCode = document.createElement('code');
+  nonceCode.textContent = plan.nonce;
+  nonceP.appendChild(nonceStrong);
+  nonceP.appendChild(nonceCode);
   card.appendChild(nonceP);
 
   const resultTable = document.createElement('table');
   resultTable.className = 'challenge-summary';
-  resultTable.innerHTML = `
-    <tr><th>Risk</th><td class="risk-${scoring.summary.risk}">${scoring.summary.risk.toUpperCase()}</td></tr>
-    <tr><th>Coverage</th><td>${scoring.summary.coverage}%</td></tr>
-    <tr><th>Confidence</th><td>${(scoring.summary.confidence * 100).toFixed(0)}%</td></tr>
-    <tr><th>Verdict</th><td>${scoring.summary.verdict}</td></tr>
-    <tr><th>Rule</th><td>${scoring.summary.verdictRule}</td></tr>
-  `;
+  const rows: Array<[string, string, string?]> = [
+    ['Risk', scoring.summary.risk.toUpperCase(), `risk-${scoring.summary.risk}`],
+    ['Coverage', `${scoring.summary.coverage}%`],
+    ['Confidence', `${(scoring.summary.confidence * 100).toFixed(0)}%`],
+    ['Verdict', scoring.summary.verdict],
+    ['Rule', scoring.summary.verdictRule],
+  ];
+  for (const [label, value, tdClass] of rows) {
+    const tr = document.createElement('tr');
+    const th = document.createElement('th');
+    th.textContent = label;
+    const td = document.createElement('td');
+    if (tdClass) td.className = tdClass;
+    td.textContent = value;
+    tr.appendChild(th);
+    tr.appendChild(td);
+    resultTable.appendChild(tr);
+  }
   card.appendChild(resultTable);
 
   const tokenHeading = document.createElement('h3');
@@ -122,8 +131,19 @@ function renderChallengeSummary(container: HTMLElement): void {
 
   const note = document.createElement('p');
   note.className = 'info-section';
-  note.textContent = 'In Challenge mode, individual detector results and raw observations are not exposed. Use Lab mode for debugging.';
+  note.textContent = 'In Challenge mode, individual detector results and raw observations are not exposed. See the static analysis page for full debugging output.';
   card.appendChild(note);
+
+  const again = document.createElement('button');
+  again.id = 'start-challenge';
+  again.className = 'btn-primary';
+  again.textContent = 'Start New Challenge';
+  again.addEventListener('click', () => {
+    currentResult = null;
+    currentPlan = null;
+    updateChallengeCard(container);
+  });
+  card.appendChild(again);
 
   container.appendChild(card);
 }
@@ -131,9 +151,6 @@ function renderChallengeSummary(container: HTMLElement): void {
 function init(): void {
   const container = document.getElementById('challenge-results');
   if (!container) return;
-  currentPlan = buildChallengePlan(getStaticDetectors(), 'challenge', {
-    seed: generateChallengeNonce(),
-  });
   updateChallengeCard(container);
 }
 

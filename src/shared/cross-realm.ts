@@ -6,7 +6,7 @@
  * values and descriptors. Each probe declares the realms in which it is valid,
  * so a missing API in an unrelated realm is not treated as a mismatch.
  */
-import { finding, inconclusive, pass, type DetectionResult } from './detector-types';
+import { finding, inconclusive, notApplicable, pass, type DetectionResult } from './detector-types';
 
 export type RealmContext =
   | 'main'
@@ -476,8 +476,7 @@ function buildWorkerScript(realm: RealmContext, probes: CrossRealmProbe[]): stri
     .map((p) => {
       const expr = probeExprForRealm(p, realm);
       if (!expr) return `  // no expression for ${p.id}`;
-      const safeExpr = expr.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');
-      return `  values[${JSON.stringify(p.id)}] = (() => { try { return (${safeExpr}); } catch (e) { return { _error: e.message }; } })();`;
+      return `  values[${JSON.stringify(p.id)}] = (() => { try { return (${expr}); } catch (e) { return { _error: e.message }; } })();`;
     })
     .join('\n');
 
@@ -674,14 +673,26 @@ export function crossRealmMismatchesToFindings(result: CrossRealmConsistencyResu
   const findings: DetectionResult[] = [];
 
   for (const snapshot of result.inconclusive) {
+    // A realm whose API is definitively absent (e.g. SharedWorker on Safari) is
+    // not applicable — the check cannot run there — whereas timeouts and errors
+    // mean collection was attempted and failed, which stays inconclusive.
+    const unsupported = snapshot.reason?.endsWith('Unsupported') === true;
     findings.push(
-      inconclusive(
-        'browser-integrity',
-        `cross-realm:${snapshot.realm}`,
-        snapshot.realm,
-        snapshot.reason ?? 'inconclusive',
-        snapshot.description ?? `Could not collect ${snapshot.realm} observations`
-      )
+      unsupported
+        ? notApplicable(
+            'browser-integrity',
+            `cross-realm:${snapshot.realm}`,
+            snapshot.realm,
+            snapshot.reason ?? 'not-applicable',
+            snapshot.description ?? `${snapshot.realm} not applicable in this environment`
+          )
+        : inconclusive(
+            'browser-integrity',
+            `cross-realm:${snapshot.realm}`,
+            snapshot.realm,
+            snapshot.reason ?? 'inconclusive',
+            snapshot.description ?? `Could not collect ${snapshot.realm} observations`
+          )
     );
   }
 

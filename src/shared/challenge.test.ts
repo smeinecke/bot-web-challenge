@@ -29,6 +29,13 @@ describe('challenge mode', () => {
     expect(new Date(plan.issuedAt).getTime()).toBeGreaterThan(0);
   });
 
+  it('binds the disclosed nonce to the shuffle seed so the plan is reproducible', () => {
+    const plan = buildChallengePlan(mockDetectors, 'challenge', { seed: 'seed-a' });
+    expect(plan.nonce).toBe('seed-a');
+    const replayed = buildChallengePlan(mockDetectors, 'challenge', { seed: plan.nonce });
+    expect(replayed.detectors.map(d => d.id)).toEqual(plan.detectors.map(d => d.id));
+  });
+
   it('lab mode keeps all detectors and does not exclude any', () => {
     const plan = buildChallengePlan(mockDetectors, 'lab');
     expect(plan.detectors).toHaveLength(mockDetectors.length);

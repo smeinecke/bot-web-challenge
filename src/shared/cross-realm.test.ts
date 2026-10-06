@@ -19,6 +19,11 @@ const allSame: RealmSnapshot[] = [
 
 const withWorkerInconclusive: RealmSnapshot[] = [
   ...allSame.slice(0, 3),
+  { realm: 'worker', values: {}, inconclusive: true, reason: 'workerTimeout', description: 'Worker collection timed out' },
+];
+
+const withWorkerUnsupported: RealmSnapshot[] = [
+  ...allSame.slice(0, 3),
   { realm: 'worker', values: {}, inconclusive: true, reason: 'workerUnsupported', description: 'Workers not supported' },
 ];
 
@@ -52,6 +57,15 @@ describe('cross-realm consistency engine', () => {
     const inconclusive = findings.filter(f => f.status === 'inconclusive');
     expect(inconclusive).toHaveLength(1);
     expect(inconclusive[0].context).toBe('worker');
+  });
+
+  it('unsupported realm APIs are not-applicable, not inconclusive', () => {
+    const result: CrossRealmConsistencyResult = { snapshots: withWorkerUnsupported, mismatches: [], inconclusive: [withWorkerUnsupported[3]] };
+    const findings = crossRealmMismatchesToFindings(result);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].status).toBe('not-applicable');
+    expect(findings[0].context).toBe('worker');
+    expect(findings[0].artifactId).toBe('cross-realm:worker');
   });
 
   it('emits findings for user-agent mismatch across realms', () => {
@@ -118,7 +132,7 @@ describe('cross-realm consistency engine', () => {
     const result: CrossRealmConsistencyResult = { snapshots: [snapshot], mismatches: [], inconclusive: [snapshot] };
     const findings = crossRealmMismatchesToFindings(result);
     expect(findings).toHaveLength(1);
-    expect(findings[0].status).toBe('inconclusive');
+    expect(findings[0].status).toBe('not-applicable');
     expect(findings[0].artifactId).toBe('cross-realm:shared-worker');
     expect(findings[0].context).toBe('shared-worker');
   });

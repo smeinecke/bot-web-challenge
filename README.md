@@ -38,9 +38,10 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 
 ### Pages
 
-- **`index.html`** - Landing page with links to both tests
-- **`static.html`** - Static fingerprinting tests (25+ bot detection signals)
+- **`index.html`** - Landing page linking to all three modes
+- **`static.html`** - Static fingerprinting tests (40 bot detection signals)
 - **`interactions.html`** - Interaction-based tests (mouse, typing, timing analysis)
+- **`challenge.html`** - Adversarial mode: randomized, nonce-bound detector subset; only the fused risk/coverage summary is disclosed
 
 ### Static Detection Tests
 
@@ -73,12 +74,19 @@ These pages implement bot detection techniques similar to [deviceandbrowserinfo.
 | `hasHighHardwareConcurrency` | Detects VM/cloud environments (>16 cores) |
 | `hasHeadlessChromeDefaultScreenResolution` | Detects headless resolutions |
 | `hasMissingBrowserChrome` | Validates `outerWidth/outerHeight` vs `innerWidth/innerHeight` |
+| `hasScreenAvailabilityAnomaly` | Detects missing taskbar dimensions on Windows desktops |
+| `hasTouchInconsistency` | Detects touch capability inconsistent with User-Agent |
 | `hasSuspiciousWeakSignals` | Collective weak signal analysis |
 | `hasNavigatorIntegrityViolation` | Inspects navigator property descriptors for tampering |
 | `hasRuntimeAPIIntegrityViolation` | Detects non-native runtime API tampering, scored by high/low diagnostic value |
 | `hasPermissionsInconsistency` | Checks Permissions API state and validates PermissionStatus object integrity |
 | `hasMediaDeviceInfoIntegrity` | Validates MediaDeviceInfo object semantics and property descriptors |
 | `hasSyntheticEventTrustedInvariant` | Verifies synthetic `Event.isTrusted` is always `false` |
+| `hasPluginsMimeTypesIssue` | Validates `navigator.plugins`/`navigator.mimeTypes` on desktop Chrome |
+| `hasLocaleTimezoneIntlIssue` | Checks locale, timezone, and Intl coherence |
+| `hasViewportScreenCoherenceIssue` | Checks viewport, screen, DPR, and orientation coherence |
+| `hasAutomationGlobalsExtended` | Detects extended automation globals (`domAutomation`, `__webdriver_*`, etc.) |
+| `checkTimingIntegrity` | Cross-realm `performance.now()` tight-loop and clock-coherence analysis |
 
 > **Important Note on Weak Signals**
 >

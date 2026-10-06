@@ -43,7 +43,10 @@ describe('WebGL / WebGPU coherence', () => {
     Object.defineProperty(navigator, 'gpu', { value: undefined, configurable: true });
 
     const result = await checkWebGLWebGPUCoherence();
-    expect(result).toBe(false);
+    expect(result).not.toBe(false);
+    if (result) {
+      expect(result.status).toBe('not-applicable');
+    }
   });
 
   it('detects a physical WebGL GPU with a software WebGPU adapter', async () => {
@@ -87,6 +90,9 @@ describe('WebGL / WebGPU coherence', () => {
     });
 
     const result = await checkWebGLWebGPUCoherence();
-    expect(result).toBe(false);
+    expect(result).not.toBe(false);
+    if (result) {
+      expect(result.status).toBe('not-applicable');
+    }
   });
 });

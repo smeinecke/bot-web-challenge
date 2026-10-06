@@ -68,6 +68,9 @@ function statusRank(status: DetectionStatus): number {
  */
 function deduplicateArtifacts(findings: DetectionResult[]): DetectionResult[] {
   const byKey = new Map<string, DetectionResult>();
+  // Detector IDs accumulate independently of which finding becomes the
+  // representative, so a higher-severity replacement cannot drop reporters.
+  const detectorIdsByKey = new Map<string, Set<string>>();
 
   for (const f of findings) {
     if (f.status !== 'finding') continue;
@@ -85,14 +88,15 @@ function deduplicateArtifacts(findings: DetectionResult[]): DetectionResult[] {
     // Always accumulate detector IDs for the artifact, whether or not the
     // current finding becomes the representative one.
     if (f.detectorId) {
-      const current = byKey.get(key);
-      if (current) {
-        const ids = new Set(current.detectorIds ?? []);
-        ids.add(f.detectorId);
-        if (current.detectorId) ids.add(current.detectorId);
-        current.detectorIds = Array.from(ids).sort();
-      }
+      const ids = detectorIdsByKey.get(key) ?? new Set<string>();
+      ids.add(f.detectorId);
+      detectorIdsByKey.set(key, ids);
     }
+  }
+
+  for (const [key, artifact] of byKey) {
+    const ids = detectorIdsByKey.get(key);
+    if (ids && ids.size > 0) artifact.detectorIds = Array.from(ids).sort();
   }
 
   return Array.from(byKey.values());
@@ -185,7 +189,7 @@ function decideVerdict(
     return {
       verdict: 'bot',
       rule: `standalone:${artifact.category}:${artifact.artifactId}`,
-      score: SEVERITY_SCORE[artifact.severity],
+      score: displayScore,
       displayScore,
     };
   }
@@ -201,7 +205,7 @@ function decideVerdict(
     return {
       verdict: 'bot',
       rule: `hard:${artifact.category}:${artifact.artifactId}`,
-      score: SEVERITY_SCORE.hard,
+      score: displayScore,
       displayScore,
     };
   }
@@ -212,7 +216,7 @@ function decideVerdict(
     return {
       verdict: 'bot',
       rule: `strong-direct:${artifact.category}:${artifact.artifactId}`,
-      score: SEVERITY_SCORE.strong,
+      score: displayScore,
       displayScore,
     };
   }
@@ -220,7 +224,6 @@ function decideVerdict(
   const mediumPlusCategories = categoryEvidence.filter(
     e => e.maxSeverity === 'medium' || e.maxSeverity === 'strong' || e.maxSeverity === 'hard'
   );
-  const mediumCategories = categoryEvidence.filter(e => e.maxSeverity === 'medium');
   const weakCategories = categoryEvidence.filter(e => e.maxSeverity === 'weak');
 
   // 3. Two independent medium-or-strong categories.
@@ -228,21 +231,23 @@ function decideVerdict(
     return {
       verdict: 'bot',
       rule: `two-independent-medium-categories:${mediumPlusCategories.map(c => c.category).join(',')}`,
-      score: 4,
+      score: displayScore,
       displayScore,
     };
   }
 
-  // 4. One medium category plus at least two weak findings from independent
-  //    categories (and those weak categories must not be the medium category).
-  if (mediumCategories.length === 1) {
-    const mediumCat = mediumCategories[0].category;
+  // 4. One medium-or-stronger category plus at least two weak findings from
+  //    independent categories (and those weak categories must not be the
+  //    medium-plus category). Strong non-direct evidence must corroborate at
+  //    least as strongly as medium evidence.
+  if (mediumPlusCategories.length === 1) {
+    const mediumCat = mediumPlusCategories[0].category;
     const independentWeak = weakCategories.filter(w => w.category !== mediumCat);
     if (independentWeak.length >= 2) {
       return {
         verdict: 'bot',
         rule: `medium-plus-weak:${mediumCat}+${independentWeak.map(w => w.category).join(',')}`,
-        score: 3,
+        score: displayScore,
         displayScore,
       };
     }
@@ -253,7 +258,7 @@ function decideVerdict(
     return {
       verdict: 'bot',
       rule: `weak-corroboration:${weakCategories.map(w => w.category).join(',')}`,
-      score: 2,
+      score: displayScore,
       displayScore,
     };
   }
@@ -268,7 +273,7 @@ function decideVerdict(
     return {
       verdict: 'unknown',
       rule: 'critical-inconclusive',
-      score: 0,
+      score: displayScore,
       displayScore,
     };
   }

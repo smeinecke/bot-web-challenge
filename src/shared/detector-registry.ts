@@ -16,7 +16,7 @@ import type {
   RawObjectFinding,
   RawDetectorValue,
 } from './detector-types';
-import { finding, inconclusive, pass } from './detector-types';
+import { finding, inconclusive, notApplicable, pass } from './detector-types';
 import * as browserChecks from './browser-checks';
 import * as workerChecks from './worker-checks';
 import * as interactionChecks from './interaction-checks';
@@ -44,7 +44,9 @@ export interface DetectorRegistryEntry {
   defaultSeverity?: DetectionSeverity;
   /**
    * What to do when the detector reports an unsupported API.
-   * `pass` means "not applicable"; `inconclusive` (default) means coverage reduced.
+   * `pass` (or unset) emits `not-applicable` — the environment cannot run the
+   * check, which is neither a pass nor evidence. `inconclusive` means coverage
+   * is reduced and the result should surface as inconclusive.
    */
   unsupportedPolicy?: 'pass' | 'inconclusive';
   /** The detection function. May return the old boolean/object shape or new structured results. */
@@ -111,8 +113,7 @@ function looksLikeFailure(value: RawObjectValue): boolean {
     obj.reason === 'timeout' ||
     obj.reason === 'workerError' ||
     obj.reason === 'workerTimeout' ||
-    obj.reason === 'processingError' ||
-    (obj.notSupported === true)
+    obj.reason === 'processingError'
   );
 }
 
@@ -168,9 +169,20 @@ export function defaultNormalize(value: unknown, entry: DetectorRegistryEntry): 
     }
 
     const unsupported = obj.notSupported === true || obj.reason === 'notSupported';
-    if (unsupported && entry.unsupportedPolicy === 'pass') {
+    if (unsupported) {
+      if (entry.unsupportedPolicy === 'inconclusive') {
+        return [
+          inconclusive(
+            entry.category,
+            entry.artifactId,
+            entry.context,
+            'not-applicable',
+            `${entry.id} not applicable in this environment`
+          ),
+        ];
+      }
       return [
-        pass(
+        notApplicable(
           entry.category,
           entry.artifactId,
           entry.context,
@@ -224,7 +236,7 @@ export function defaultNormalize(value: unknown, entry: DetectorRegistryEntry): 
 function headlessResolutionNormalize(value: unknown, entry: DetectorRegistryEntry): DetectionResult[] {
   if (!value || typeof value !== 'object') return defaultNormalize(value, entry);
   const obj = value as RawObjectFinding;
-  if (obj.match || obj.match === 0) {
+  if (obj.match) {
     return [
       finding(
         'medium',
@@ -459,14 +471,17 @@ export async function runDetectors(entries: DetectorRegistryEntry[]): Promise<De
       let entryFindings: DetectionResult[] = [];
 
       try {
-        const start = performance.now();
         const promiseOrValue = entry.run();
         let value: unknown;
 
-        if (promiseOrValue instanceof Promise) {
+        const isThenable =
+          promiseOrValue !== null &&
+          (typeof promiseOrValue === 'object' || typeof promiseOrValue === 'function') &&
+          typeof (promiseOrValue as PromiseLike<unknown>).then === 'function';
+        if (isThenable) {
           const timeoutMs = entry.timeoutMs ?? 3000;
           value = await Promise.race([
-            promiseOrValue,
+            Promise.resolve(promiseOrValue as PromiseLike<unknown>),
             new Promise<never>((_, reject) =>
               setTimeout(() => reject(new Error('detector-timeout')), timeoutMs)
             ),
@@ -482,29 +497,26 @@ export async function runDetectors(entries: DetectorRegistryEntry[]): Promise<De
           ...f,
           detectorId: entry.id,
           critical: entry.critical,
-          raw,
         }));
-
-        const elapsed = performance.now() - start;
-        if (elapsed > 500 && !entryFindings.some(f => f.status !== 'passed')) {
-          // Long running detectors that passed are still valid.
-        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        const timedOut = message === 'detector-timeout';
         entryFindings = [
           {
             ...inconclusive(
               entry.category,
               entry.artifactId,
               entry.context,
-              'detector-exception',
-              `${entry.id} threw an exception: ${message}`
+              timedOut ? 'detector-timeout' : 'detector-exception',
+              timedOut
+                ? `${entry.id} exceeded ${entry.timeoutMs ?? 3000}ms timeout`
+                : `${entry.id} threw an exception: ${message}`
             ),
             detectorId: entry.id,
             critical: entry.critical,
           },
         ];
-        raw = { inconclusive: true, reason: 'exception', description: message };
+        raw = { inconclusive: true, reason: timedOut ? 'timeout' : 'exception', description: message };
       }
 
       rawResults[entry.id] = raw;

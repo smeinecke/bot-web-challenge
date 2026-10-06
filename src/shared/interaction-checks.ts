@@ -203,7 +203,9 @@ export function onKeyDown(e: KeyboardEvent): void {
       hasKeyCode: e.keyCode > 0,
     });
   }
-  tracking.keystrokeTimes.push(Date.now());
+  if (tracking.keystrokeTimes.length < MAX_EVENTS) {
+    tracking.keystrokeTimes.push(Date.now());
+  }
   tracking.totalKeystrokes++;
   tracking.lastActivityTime = Date.now();
 }
@@ -303,12 +305,6 @@ export function stopTracking(): void {
     form.removeEventListener('input', onFormInput as EventListener);
     form.removeEventListener('change', onFormChange);
   }
-}
-
-export function areFieldsPopulated(): boolean {
-  const emailField = document.getElementById('email') as HTMLInputElement | null;
-  const passwordField = document.getElementById('password') as HTMLInputElement | null;
-  return Boolean((emailField?.value && emailField.value.length > 0) || (passwordField?.value && passwordField.value.length > 0));
 }
 
 function hasEnoughObservation(): boolean {
@@ -540,6 +536,16 @@ export function analyzeSuperHumanSpeed(): DetectionResult {
 }
 
 export function analyzeAdvancedInteractionSignals(): DetectionResult {
+  if (!hasEnoughObservation()) {
+    return pass(
+      'interaction',
+      'advanced-bot-signals',
+      'interaction',
+      'insufficient-observation',
+      'Waiting for more interaction data'
+    );
+  }
+
   const pointer = extractPointerFeatures(tracking);
   const keyboard = extractKeyboardFeatures(tracking);
   const session = extractSessionFeatures(tracking);

@@ -66,14 +66,53 @@ describe('behavioral feature extraction', () => {
   it('detects uniform mouse timing and straight lines as pointer anomalies', () => {
     const t0 = Date.now();
     for (let i = 0; i < 60; i++) {
-      // straight line right
-      addMouseMove(i * 5, 100, t0 + i * 16);
+      // straight line right, paced at a non-refresh interval (10ms)
+      addMouseMove(i * 5, 100, t0 + i * 10);
     }
 
     const pointer = extractPointerFeatures(tracking);
     expect(pointer.score).toBeGreaterThanOrEqual(0.25);
     expect(pointer.flags).toContain('tooManyStraightLines');
     expect(pointer.flags).toContain('uniformEventTiming');
+  });
+
+  it('does not flag frame-paced delivery timing as uniformEventTiming', () => {
+    const t0 = Date.now();
+    for (let i = 0; i < 60; i++) {
+      // Alternating 16/17ms delivery like a real 60Hz refresh cadence, with a
+      // wandering path so straightness is not a factor.
+      addMouseMove(i * 5 + Math.sin(i * 0.8) * 12, 100 + Math.cos(i * 0.6) * 10, t0 + i * 16 + (i % 2));
+    }
+
+    const pointer = extractPointerFeatures(tracking);
+    expect(pointer.flags).not.toContain('uniformEventTiming');
+  });
+
+  it('curved, jittered human-like movement is not flagged as straight lines', () => {
+    const t0 = Date.now();
+    for (let i = 0; i < 60; i++) {
+      // A meandering path with sub-pixel scale wobble; deltas stay small like
+      // real pointer input.
+      const x = i * 4 + Math.sin(i * 0.7) * 15 + (i % 3);
+      const y = 100 + Math.sin(i * 0.4) * 20 + Math.cos(i * 1.3) * 3;
+      addMouseMove(x, y, t0 + i * 17);
+    }
+
+    const pointer = extractPointerFeatures(tracking);
+    expect(pointer.flags).not.toContain('tooManyStraightLines');
+    expect(pointer.flags).not.toContain('uniformPointerVelocity');
+  });
+
+  it('zigzag direction reversals are not flagged as straight lines', () => {
+    const t0 = Date.now();
+    for (let i = 0; i < 60; i++) {
+      const x = i * 4;
+      const y = 100 + (i % 2 === 0 ? 0 : 30);
+      addMouseMove(x, y, t0 + i * 20);
+    }
+
+    const pointer = extractPointerFeatures(tracking);
+    expect(pointer.flags).not.toContain('tooManyStraightLines');
   });
 
   it('detects super-human typing speed as a keyboard anomaly', () => {

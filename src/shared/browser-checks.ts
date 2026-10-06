@@ -4,6 +4,7 @@
 import {
   finding,
   inconclusive,
+  notApplicable,
   pass,
   type DetectionCategory,
   type DetectionResult,
@@ -159,9 +160,9 @@ export function checkPlaywright(): boolean {
 }
 
 /** Check for inconsistent chrome object */
-export function checkInconsistentChrome(): { reason: string; description: string; weak?: boolean } | false {
+export function checkInconsistentChrome(): { reason: string; description: string; weak?: boolean } | { notSupported: true } | false {
   const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
-  if (!isChrome) return false;
+  if (!isChrome) return { notSupported: true };
 
   if (typeof (window as Record<string, unknown>).chrome === 'undefined') {
     return { reason: 'chromeMissing', description: 'window.chrome missing on Chromium browser' };
@@ -294,9 +295,9 @@ export function checkHeadlessChrome(): { indicators: string[]; description: stri
 }
 
 /** Check client hints consistency */
-export function checkInconsistentClientHints(): { inconsistencies: string[]; hintPlatform?: string; description: string } | false {
+export function checkInconsistentClientHints(): { inconsistencies: string[]; hintPlatform?: string; description: string } | { notSupported: true } | false {
   if (!navigator.userAgentData) {
-    return false;
+    return { notSupported: true };
   }
 
   const hints = navigator.userAgentData;
@@ -321,7 +322,9 @@ export function checkInconsistentClientHints(): { inconsistencies: string[]; hin
       'macOS': /Mac/,
       'Linux': /Linux/,
       'Android': /Android/,
-      'iOS': /iPhone|iPad|iPod/
+      'iOS': /iPhone|iPad|iPod/,
+      'Chrome OS': /CrOS/,
+      'Chromium OS': /CrOS/
     };
 
     let platformMatch = false;
@@ -358,10 +361,10 @@ export function checkWebGLInconsistent(): Record<string, unknown> | false {
     const canvas = document.createElement('canvas');
     const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl') as WebGLRenderingContext | null;
 
-    if (!gl) return false;
+    if (!gl) return { notSupported: true };
 
     const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
-    if (!debugInfo) return false;
+    if (!debugInfo) return { notSupported: true };
 
     const vendor = gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
     const renderer = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
@@ -399,7 +402,7 @@ export function checkInconsistentGPUFeatures(): Record<string, unknown> | false 
     const canvas = document.createElement('canvas');
     const gl = canvas.getContext('webgl');
 
-    if (!gl) return false;
+    if (!gl) return { notSupported: true };
 
     const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
     const maxViewportDims = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
@@ -621,13 +624,6 @@ export function checkPrepareStackTrace(): DetectionResult[] {
   }
 
   return results;
-}
-
-/**
- * @deprecated Use `checkPrepareStackTrace` for the new structured result model.
- */
-export function checkCDPViaStackTrace(): DetectionResult[] {
-  return checkPrepareStackTrace();
 }
 
 /** Check audio fingerprint for headless indicators */
@@ -889,11 +885,11 @@ export function checkIframeOverridden(): DetectionResult[] {
 }
 
 /** Check hardware concurrency */
-export function checkHighHardwareConcurrency(): { cores: number; threshold: number; description: string } | false {
+export function checkHighHardwareConcurrency(): { cores: number; threshold: number; description: string } | { notSupported: true } | false {
   const cores = navigator.hardwareConcurrency;
 
   if (!cores || cores === 0) {
-    return false;
+    return { notSupported: true };
   }
 
   if (cores > 16) {
@@ -1016,10 +1012,10 @@ export function checkMissingBrowserChrome(): DetectionResult[] {
 /** Check screen availability */
 export function checkScreenAvailability(): Record<string, unknown> | false {
   const isWindows = /Win/.test(navigator.platform) || /Windows/.test(navigator.userAgent);
-  if (!isWindows) return false;
+  if (!isWindows) return { notSupported: true };
 
   const isMobile = /Mobile|Android|iPhone|iPad/.test(navigator.userAgent);
-  if (isMobile) return false;
+  if (isMobile) return { notSupported: true };
 
   if (window.screen.availHeight === window.screen.height &&
       window.screen.availWidth === window.screen.width) {
@@ -1185,7 +1181,15 @@ function looksLikeNativePermissionStatus(status: unknown): PermissionStatusInteg
 /** Check permissions consistency and PermissionStatus object integrity */
 export async function checkPermissionsConsistency(): Promise<DetectionResult[] | false> {
   if (!navigator.permissions || typeof navigator.permissions.query !== 'function') {
-    return false;
+    return [
+      notApplicable(
+        'permissions',
+        'permissions:notification',
+        'main',
+        'permissions-api-missing',
+        'Permissions API is not available in this environment'
+      ),
+    ];
   }
 
   const findings: DetectionResult[] = [];
@@ -1263,7 +1267,7 @@ export function checkPluginsMimeTypes(): Record<string, unknown> | false {
   const mimeTypes = navigator.mimeTypes;
 
   if (!plugins || !mimeTypes) {
-    return false;
+    return { notSupported: true };
   }
 
   if (isChromeDesktop && plugins.length === 0) {
@@ -1581,8 +1585,6 @@ export function analyzeWeakSignals(): DetectionResult[] {
 
   return results;
 }
-
-/**
 
 /** Check Event.isTrusted invariant for synthetic events */
 export function checkSyntheticEventIsTrusted(): DetectionResult[] {
@@ -1974,13 +1976,25 @@ export function checkRuntimeAPIIntegrity(): Promise<Record<string, unknown> | fa
 /** Check MediaDeviceInfo object semantics */
 export async function checkMediaDeviceInfoSemantics(): Promise<DetectionResult | false> {
   if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') {
-    return false;
+    return notApplicable(
+      'api-integrity',
+      'media-devices:info-integrity',
+      'main',
+      'media-devices-api-missing',
+      'MediaDevices API is not available in this environment'
+    );
   }
 
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     if (!Array.isArray(devices) || devices.length === 0) {
-      return false;
+      return notApplicable(
+        'api-integrity',
+        'media-devices:info-integrity',
+        'main',
+        'media-devices-empty',
+        'No media devices to inspect'
+      );
     }
 
     const fakes: Array<{
@@ -2000,9 +2014,12 @@ export async function checkMediaDeviceInfoSemantics(): Promise<DetectionResult |
       const proto = Object.getPrototypeOf(d);
       const constructorName = proto && proto.constructor && proto.constructor.name ? proto.constructor.name : '';
       const hasToJSON = typeof (d as { toJSON?: unknown }).toJSON === 'function';
+      // Input devices surface as InputDeviceInfo, a genuine MediaDeviceInfo
+      // subclass in Chromium/WebKit — its toStringTag and constructor name
+      // differ legitimately, so instanceof (not name equality) is the check.
       const looksNative =
-        toStringTag === '[object MediaDeviceInfo]' &&
-        constructorName === 'MediaDeviceInfo' &&
+        (toStringTag === '[object MediaDeviceInfo]' || toStringTag === '[object InputDeviceInfo]') &&
+        (constructorName === 'MediaDeviceInfo' || constructorName === 'InputDeviceInfo') &&
         hasToJSON &&
         (!globalConstructor || d instanceof globalConstructor);
 
@@ -2051,13 +2068,25 @@ export async function checkMediaDeviceInfoSemantics(): Promise<DetectionResult |
 export async function checkHighEntropyClientHintsCoherence(): Promise<DetectionResult | false> {
   const uaData = navigator.userAgentData;
   if (!uaData || typeof uaData.getHighEntropyValues !== 'function') {
-    return false;
+    return notApplicable(
+      'api-integrity',
+      'client-hints:high-entropy',
+      'main',
+      'user-agent-data-missing',
+      'User-Agent Client Hints API is not available in this environment'
+    );
   }
 
   try {
     const high = await uaData.getHighEntropyValues(['architecture', 'bitness', 'platformVersion', 'fullVersionList', 'model']);
     if (!high || typeof high !== 'object') {
-      return false;
+      return notApplicable(
+        'api-integrity',
+        'client-hints:high-entropy',
+        'main',
+        'high-entropy-values-missing',
+        'getHighEntropyValues returned no usable data'
+      );
     }
 
     const issues: string[] = [];
@@ -2077,8 +2106,11 @@ export async function checkHighEntropyClientHintsCoherence(): Promise<DetectionR
     const arch = (high.architecture as string | undefined) || '';
     const bitness = (high.bitness as string | undefined) || '';
     if (arch && bitness) {
-      const is64Arch = /\b(x86_64|x86-64|amd64|em64t)\b/i.test(arch);
-      const is32Arch = /\b(x86|i[36]86|i686)\b/i.test(arch) && !is64Arch;
+      // Chromium reports architecture "x86" for both 32- and 64-bit x86 and
+      // "arm" for both ARM variants — bare family tokens are ambiguous and are
+      // only contradicted by bitness when an explicit bit-width token appears.
+      const is64Arch = /\b(x86_64|x86-64|amd64|em64t|arm64|aarch64)\b/i.test(arch);
+      const is32Arch = /\b(i[36]86|i686)\b/i.test(arch) && !is64Arch;
       if ((is64Arch && bitness !== '64') || (is32Arch && bitness === '64')) {
         issues.push('architectureBitnessMismatch');
       }

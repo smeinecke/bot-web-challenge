@@ -91,14 +91,19 @@ export function extractPointerFeatures(state: TrackingState): DimensionScore {
         const angle = Math.atan2(Math.abs(cross), dot);
         curvatures.push(angle);
 
-        const segmentDist = Math.hypot(p2.x - p0.x, p2.y - p0.y);
-        const deviation = Math.abs(cross) / Math.max(1, segmentDist);
-        const threshold = Math.max(50, segmentDist * 0.1);
-        straightSegments.push(deviation < threshold ? 1 : 0);
+        // Scale-invariant straightness: the sine of the turn angle between
+        // consecutive steps. An absolute pixel threshold can't work because
+        // real input deltas are only a few pixels. A step counts as straight
+        // only when it keeps moving forward (dot > 0) with a turn angle under
+        // ~5.7 degrees (sin < 0.1); reversals and wiggles don't count.
+        const lenA = Math.hypot(a.x, a.y);
+        const lenB = Math.hypot(b.x, b.y);
+        const sinAngle = lenA > 0 && lenB > 0 ? Math.abs(cross) / (lenA * lenB) : 0;
+        straightSegments.push(sinAngle < 0.1 && dot > 0 ? 1 : 0);
 
         // Simple overshoot heuristic: direction reversals
         if ((p1.x - p0.x) * (p0.x - p2.x) < 0 || (p1.y - p0.y) * (p0.y - p2.y) < 0) {
-          if (Math.hypot(p1.x - p2.x, p1.y - p2.y) > segmentDist * 1.2) {
+          if (Math.hypot(p1.x - p2.x, p1.y - p2.y) > lenB * 1.2) {
             overshoots++;
           }
         }
@@ -140,8 +145,15 @@ export function extractPointerFeatures(state: TrackingState): DimensionScore {
     if (intervals.length >= 10) {
       const cv = coefficientOfVariation(intervals);
       if (cv < 0.1) {
-        flags.push('uniformEventTiming');
-        score += 0.2;
+        // Real input is delivered at display cadence (≈16.7/8.3/6.9/4.2 ms for
+        // 60/120/144/240 Hz), which legitimately produces near-uniform integer
+        // intervals. Only uniform pacing off the refresh grid is machine-made.
+        const meanInterval = mean(intervals);
+        const nearFramePaced = [16.67, 8.33, 6.94, 4.17].some(p => Math.abs(meanInterval - p) <= 1.5);
+        if (!nearFramePaced) {
+          flags.push('uniformEventTiming');
+          score += 0.2;
+        }
       }
     }
   }
@@ -181,13 +193,6 @@ export function extractPointerFeatures(state: TrackingState): DimensionScore {
 export function extractKeyboardFeatures(state: TrackingState): DimensionScore {
   const flags: string[] = [];
   let score = 0;
-
-  const downTimes: number[] = [];
-  const upTimes: number[] = [];
-  for (const e of state.keyEvents) {
-    if (e.type === 'down') downTimes.push(e.time as number);
-    if (e.type === 'up') upTimes.push(e.time as number);
-  }
 
   const intervals: number[] = [];
   for (let i = 1; i < state.keystrokeTimes.length; i++) {

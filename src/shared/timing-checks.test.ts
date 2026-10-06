@@ -249,6 +249,51 @@ describe('analyzeTimingMeasurements', () => {
     expect(rafFinding?.reason).toMatch(/raf-future-timestamp/);
   });
 
+  it('does not flag frame-quantized clocks (hardened Firefox) as timing anomalies', () => {
+    // Firefox with clamped timers reports performance.now() in frame-aligned
+    // steps (~16.667ms at 60Hz). The rAF timestamp legitimately lands one frame
+    // ahead of the quantized now(), and a 150ms delay under-reads by ~2 quanta.
+    const quantum = 1000 / 60;
+    const samples = Array.from({ length: 100 }, (_, i) => i * quantum);
+    const measurements: TimingMeasurements = {
+      main: makeMainMeasurement(samples, quantum, {
+        raf: makeRafMeasurement(283.339, 266.672, quantum, 0),
+        delay: {
+          targetDelayMs: 150,
+          actualDelayMs: 166,
+          performanceDeltaMs: 8 * quantum,
+          driftMs: 8 * quantum - 166,
+          relativeDrift: (8 * quantum - 166) / 166,
+        },
+        timeOriginCoherence: { timeOrigin: 100, nowAtCheck: 283.339, dateAtCheck: 366, driftMs: 17.2 },
+      }),
+      realms: [makeRealm('worker', samples, quantum)],
+      collectedAt: Date.now(),
+    };
+    const analysis = analyzeTimingMeasurements(measurements);
+    expect(findingByArtifactId(analysis.findings, 'timing:raf-coherence')).toBeUndefined();
+    expect(findingByArtifactId(analysis.findings, 'timing:cross-clock-coherence')).toBeUndefined();
+    expect(findingByArtifactId(analysis.findings, 'timing:time-origin-coherence')).toBeUndefined();
+    expect(scoredFindings(analysis.findings)).toHaveLength(0);
+  });
+
+  it('still flags grossly future rAF timestamps on quantized clocks', () => {
+    const quantum = 1000 / 60;
+    const samples = Array.from({ length: 100 }, (_, i) => i * quantum);
+    const measurements: TimingMeasurements = {
+      main: makeMainMeasurement(samples, quantum, {
+        raf: makeRafMeasurement(500, 400, 120, 0),
+      }),
+      realms: [],
+      collectedAt: Date.now(),
+    };
+    const analysis = analyzeTimingMeasurements(measurements);
+    const rafFinding = findingByArtifactId(analysis.findings, 'timing:raf-coherence');
+    expect(rafFinding).toBeDefined();
+    expect(rafFinding?.status).toBe('finding');
+    expect(rafFinding?.reason).toMatch(/raf-future-timestamp/);
+  });
+
   it('flags non-monotonic rAF timestamps as a coherence finding', () => {
     const raf: TimingRafMeasurement = {
       rafTimestamp: 50,

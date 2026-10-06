@@ -216,14 +216,6 @@ export function evaluateWorkerConsistency(workerData: WorkerResults): Record<str
 }
 
 /**
- * Compare main context vs worker context values.
- * A failed worker measurement is reported as `inconclusive`, not as a pass.
- */
-export async function checkInconsistentWorkerValues(): Promise<Record<string, unknown> | false> {
-  return evaluateWorkerConsistency(await runWorkerTests());
-}
-
-/**
  * Evaluate CDP detection using already-collected worker data.
  * A failed worker measurement must be `inconclusive`, never `false`/pass.
  */

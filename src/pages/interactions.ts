@@ -11,6 +11,7 @@ import {
   resetWorkerTestsCache,
   extractTimingMeasurements,
   startTracking,
+  stopTracking,
   resetTracking,
   tracking,
   type TrackingState,
@@ -20,6 +21,7 @@ import {
 function onFormSubmit(e: Event): void {
   e.preventDefault();
   tracking.submitTime = Date.now();
+  stopTracking();
   analyzeAndShowResults();
 
   const resultsCard = document.getElementById('results-card');

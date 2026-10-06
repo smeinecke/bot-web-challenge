@@ -152,6 +152,34 @@ describe('evidence-fusion scoring', () => {
     expect(scoring.summary.verdictRule).toContain('medium-plus-weak');
   });
 
+  it('one strong non-direct category plus two independent weak findings also produces a bot verdict', () => {
+    const findings = [
+      f(finding('strong', 'environment', 'environment:strong', 'main', 'strong-env', 'Strong environment signal')),
+      f(finding('weak', 'browser-integrity', 'browser-integrity:weak', 'main', 'weak-bi', 'Weak integrity')),
+      f(finding('weak', 'fingerprint', 'fingerprint:weak', 'main', 'weak-fp', 'Weak fingerprint')),
+    ];
+    const scoring = summarizeResults(rawBase, findings);
+    expect(scoring.summary.verdict).toBe('bot');
+    expect(scoring.summary.verdictRule).toContain('medium-plus-weak');
+  });
+
+  it('deduplication keeps every reporting detector ID when a stronger finding wins', () => {
+    const raw = { detA: { probe: 'weak' }, detB: { probe: 'strong' } };
+    const findings = [
+      f({ ...finding('weak', 'environment', 'dup:artifact', 'main', 'dup', 'weak report'), detectorId: 'detA' }),
+      f({ ...finding('strong', 'environment', 'dup:artifact', 'main', 'dup', 'strong report'), detectorId: 'detB' }),
+    ];
+    const scoring = summarizeResults(raw, findings);
+    expect(scoring.scoredArtifacts).toHaveLength(1);
+    const artifact = scoring.scoredArtifacts[0];
+    expect(artifact.severity).toBe('strong');
+    expect(artifact.detectorIds).toEqual(['detA', 'detB']);
+    // Both detectors keep score attribution even though only detB's finding is
+    // the representative artifact.
+    expect(scoring.tests.detA.scoreContribution).toBe(4);
+    expect(scoring.tests.detB.scoreContribution).toBe(4);
+  });
+
   it('passes and inconclusive results are tracked in coverage summary', () => {
     const findings = [
       f(pass('webdriver', 'webdriver:true', 'main', 'no-finding', 'No webdriver')),

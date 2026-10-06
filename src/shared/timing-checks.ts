@@ -675,10 +675,7 @@ export function analyzeTimingMeasurements(
   const evidence: Record<string, unknown> = { collectedAt: measurements.collectedAt };
   const allRealms = [measurements.main, ...measurements.realms];
 
-  const realmFlags: Record<
-    string,
-    { stats: TightLoopStats; inflated: boolean; monotonic: boolean }
-  > = {};
+  const realmStats: Record<string, TightLoopStats> = {};
   let mainTightLoopSupported = false;
 
   for (const realm of allRealms) {
@@ -697,11 +694,7 @@ export function analyzeTimingMeasurements(
 
     if (stats) {
       if (realm.realm === 'main') mainTightLoopSupported = true;
-      realmFlags[realm.realm] = {
-        stats,
-        inflated: isInflated(stats, opts),
-        monotonic: (stats.nonMonotonicDrops ?? 0) > 0,
-      };
+      realmStats[realm.realm] = stats;
     } else if (isNotSupported(realm.tightLoop)) {
       if (realm.realm === 'main') {
         mainTightLoopSupported = false;
@@ -727,12 +720,47 @@ export function analyzeTimingMeasurements(
         'main',
         'main-timing-unsupported',
         'performance.now() is not available in the main realm',
-        { evidence }
+        { collectedAt: measurements.collectedAt }
       )
     );
     return { findings, evidence, clean: false };
   }
 
+  // The observed clock quantum bounds what timing comparisons can actually
+  // distinguish: on browsers that quantize performance.now() to the frame
+  // interval (e.g. hardened Firefox builds reporting multiples of 16.667ms),
+  // sub-quantum drift, future offsets, and elapsed-time discrepancies are
+  // measurement noise, not anomalies. When the tight loop never observes a
+  // positive delta the quantum cannot be measured, so tolerances also carry a
+  // display-frame floor: a rAF timestamp may legitimately be the upcoming
+  // frame's vsync time (~16.7ms ahead at 60Hz), and a 150ms delay can quantize
+  // ~2 frames off the target.
+  const FRAME_MS = 1000 / 60;
+  const clockResolutionMs = Object.values(realmStats).reduce(
+    (max, stats) => Math.max(max, stats.medianPositiveDelta ?? 0),
+    0
+  );
+  const quantumMs = Math.max(clockResolutionMs, FRAME_MS);
+  const delayDriftAbsTolerance = Math.max(opts.delayDriftAbsMs, 3 * quantumMs);
+  const timeOriginDriftTolerance = Math.max(opts.timeOriginDriftMs, 3 * quantumMs);
+  const rafFutureOffsetTolerance = Math.max(opts.rafFutureOffsetMs, 3 * quantumMs);
+  const eventTsDriftTolerance = Math.max(opts.eventTsDriftMs, 3 * quantumMs);
+  // Inflation noise is bounded by the *measured* quantum alone — the frame
+  // floor doesn't apply because a reported elapsed > 0 requires a positive
+  // delta, which is exactly what the resolution measurement captures.
+  const inflationOpts = { ...opts, inflationAbsMs: Math.max(opts.inflationAbsMs, 3 * clockResolutionMs) };
+
+  const realmFlags: Record<
+    string,
+    { stats: TightLoopStats; inflated: boolean; nonMonotonic: boolean }
+  > = {};
+  for (const [realm, stats] of Object.entries(realmStats)) {
+    realmFlags[realm] = {
+      stats,
+      inflated: isInflated(stats, inflationOpts),
+      nonMonotonic: (stats.nonMonotonicDrops ?? 0) > 0,
+    };
+  }
   const flagsList = Object.entries(realmFlags);
 
   // call-frequency inflation
@@ -757,7 +785,7 @@ export function analyzeTimingMeasurements(
   }
 
   // monotonicity
-  const nonMonotonic = flagsList.filter(([, v]) => v.monotonic);
+  const nonMonotonic = flagsList.filter(([, v]) => v.nonMonotonic);
   if (nonMonotonic.length > 0) {
     findings.push(
       finding(
@@ -805,7 +833,7 @@ export function analyzeTimingMeasurements(
     if (isDelayMeasurement(measurements.main.delay)) {
       const delay = measurements.main.delay as TimingDelayMeasurement;
       if (
-        Math.abs(delay.driftMs) > opts.delayDriftAbsMs &&
+        Math.abs(delay.driftMs) > delayDriftAbsTolerance &&
         Math.abs(delay.relativeDrift) > opts.delayDriftRel
       ) {
         if (inflated.length === 0) {
@@ -839,7 +867,7 @@ export function analyzeTimingMeasurements(
   if (measurements.main.timeOriginCoherence) {
     if (isTimeOriginMeasurement(measurements.main.timeOriginCoherence)) {
       const toc = measurements.main.timeOriginCoherence as TimingTimeOriginMeasurement;
-      if (Math.abs(toc.driftMs) > opts.timeOriginDriftMs) {
+      if (Math.abs(toc.driftMs) > timeOriginDriftTolerance) {
         if (inflated.length === 0) {
           findings.push(
             finding(
@@ -874,9 +902,11 @@ export function analyzeTimingMeasurements(
       const rafReasons: string[] = [];
 
       // A positive futureOffset means the rAF timestamp is later than
-      // performance.now() inside the callback, which contradicts the rendering
-      // order: the frame timestamp should not materially post-date the callback.
-      if (raf.futureOffset > opts.rafFutureOffsetMs) {
+      // performance.now() inside the callback. The spec allows the timestamp
+      // to be the upcoming frame's vsync time, and quantized clocks add up to
+      // a few quanta of slop — only offsets beyond the measurable floor
+      // contradict the rendering order.
+      if (raf.futureOffset > rafFutureOffsetTolerance) {
         rafReasons.push('raf-future-timestamp');
       }
 
@@ -915,7 +945,7 @@ export function analyzeTimingMeasurements(
   if (measurements.main.eventTimestamp) {
     if (isEventTimestampMeasurement(measurements.main.eventTimestamp)) {
       const ev = measurements.main.eventTimestamp as TimingEventTimestampMeasurement;
-      if (ev.eventTimestamp > 0 && Math.abs(ev.driftMs) > opts.eventTsDriftMs) {
+      if (ev.eventTimestamp > 0 && Math.abs(ev.driftMs) > eventTsDriftTolerance) {
         findings.push(
           finding(
             'weak',
@@ -950,7 +980,7 @@ export function analyzeTimingMeasurements(
         'main',
         'timing-consistent',
         'Timing measurements are consistent with a stock browser',
-        { evidence }
+        { collectedAt: measurements.collectedAt }
       )
     );
   }

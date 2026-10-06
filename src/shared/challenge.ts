@@ -105,8 +105,10 @@ export function buildChallengePlan(
   const targetCount = Math.max(minDetectors, Math.floor(shuffled.length * fraction));
   const selected = shuffled.slice(0, Math.min(shuffled.length, targetCount));
 
+  // The disclosed nonce IS the shuffle seed so an attempt can be replayed and
+  // audited: given the nonce and the same registry, the plan is reproducible.
   return {
-    nonce: generateChallengeNonce(),
+    nonce: seed,
     issuedAt: new Date().toISOString(),
     detectors: selected,
     excludedCount: availableDetectors.length - selected.length,

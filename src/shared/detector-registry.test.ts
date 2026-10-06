@@ -87,5 +87,40 @@ describe('detector registry', () => {
     const scoring = summarizeResults(rawResults, findings);
     expect(scoring.tests.willTimeout.status).toBe('inconclusive');
     expect(scoring.tests.willTimeout.passed).toBe(false);
+    expect(findings[0].reason).toBe('detector-timeout');
+  });
+
+  it('a non-native thenable detector value is awaited, not normalized as an object', async () => {
+    const { findings } = await runDetectors([
+      {
+        id: 'thenable',
+        artifactId: 'thenable',
+        category: 'browser-integrity',
+        context: 'main',
+        critical: false,
+        isAsync: true,
+        // A foreign-realm promise or custom thenable is not instanceof Promise.
+        run: () => ({ then: (resolve: (v: unknown) => void) => resolve(true) }) as unknown as Promise<boolean>,
+      },
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].status).toBe('finding');
+  });
+
+  it('a notSupported result with unsupportedPolicy pass is not-applicable, not passed', async () => {
+    const { findings } = await runDetectors([
+      {
+        id: 'unsupportedDet',
+        artifactId: 'unsupported:thing',
+        category: 'fingerprint',
+        context: 'main',
+        critical: false,
+        isAsync: false,
+        unsupportedPolicy: 'pass',
+        run: () => ({ notSupported: true }),
+      },
+    ]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].status).toBe('not-applicable');
   });
 });

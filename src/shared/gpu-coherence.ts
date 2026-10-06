@@ -5,7 +5,7 @@
  * support (adapter info shape, fallback markers, etc.) can be adjusted without
  * touching the rest of the detection pipeline.
  */
-import { finding, inconclusive, type DetectionResult } from './detector-types';
+import { finding, inconclusive, notApplicable, type DetectionResult } from './detector-types';
 
 const SOFTWARE_RENDERERS = ['SwiftShader', 'llvmpipe', 'software', 'Google SwiftShader'];
 
@@ -54,24 +54,24 @@ function looksLikeSoftwareAdapter(info: GPUAdapterInfo): boolean {
 export async function checkWebGLWebGPUCoherence(): Promise<DetectionResult | false | null> {
   try {
     if (!navigator.gpu || typeof navigator.gpu.requestAdapter !== 'function') {
-      return false;
+      return notApplicable('fingerprint', 'gpu:webgl-webgpu', 'main', 'webgpu-missing', 'WebGPU API is not available in this environment');
     }
 
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter || !adapter.info) {
-      return false;
+      return notApplicable('fingerprint', 'gpu:webgl-webgpu', 'main', 'webgpu-no-adapter', 'WebGPU adapter or adapter info is not available');
     }
 
     const webglInfo = getWebGLUnmaskedInfo();
     if (!webglInfo || !webglInfo.vendor || !webglInfo.renderer) {
       // WebGL info is missing/redacted, so no meaningful comparison is possible.
-      return false;
+      return notApplicable('fingerprint', 'gpu:webgl-webgpu', 'main', 'webgl-info-missing', 'WebGL vendor/renderer information is not available');
     }
 
     const gpuInfo = adapter.info;
     const hasGpuInfo = gpuInfo.vendor || gpuInfo.architecture || gpuInfo.device || gpuInfo.description || gpuInfo.isFallbackAdapter === true;
     if (!hasGpuInfo) {
-      return false;
+      return notApplicable('fingerprint', 'gpu:webgl-webgpu', 'main', 'webgpu-info-redacted', 'WebGPU adapter info is empty or redacted');
     }
 
     const webglPhysical = looksLikePhysicalGPU(webglInfo);
