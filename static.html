@@ -94,11 +94,13 @@
             const line = captureLog('log', args);
             originalConsoleLog.apply(console, args);
         };
+        console.log.__bwcSelfInstrumentation = true;
 
         console.error = function(...args) {
             const line = captureLog('error', args);
             originalConsoleError.apply(console, args);
         };
+        console.error.__bwcSelfInstrumentation = true;
 
         function updateDebugLogTextarea() {
             const textarea = document.getElementById('debug-log-textarea');

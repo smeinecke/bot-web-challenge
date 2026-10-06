@@ -1702,14 +1702,24 @@ interface RuntimeAPIEntry {
   obj: object;
   prop: string;
   fn: () => unknown;
+  /** Allow this low-value API to declare page-local self-instrumentation. */
+  allowSelfTag?: boolean;
 }
+
+/**
+ * Pages that wrap low-value APIs for their own UI (e.g. an on-page console)
+ * may tag the wrapper with this flag so it is not reported as a modification.
+ * Only honored on entries with allowSelfTag so high-value APIs cannot use it
+ * to evade scoring.
+ */
+const SELF_INSTRUMENTED_FLAG = '__bwcSelfInstrumentation';
 
 function buildRuntimeAPIEntries(root: Record<string, unknown>): RuntimeAPIEntry[] {
   const entries: RuntimeAPIEntry[] = [];
 
   const console = root.console as Record<string, unknown> | undefined;
   if (console) {
-    entries.push({ id: 'console.log', obj: console, prop: 'log', fn: () => console.log });
+    entries.push({ id: 'console.log', obj: console, prop: 'log', fn: () => console.log, allowSelfTag: true });
   }
 
   if (root.Worker) {
@@ -1821,6 +1831,11 @@ function inspectRuntimeAPIs(root: Record<string, unknown>): RuntimeAPIModificati
     try {
       const fn = entry.fn();
       if (typeof fn !== 'function') continue;
+      if (
+        entry.allowSelfTag &&
+        (fn as unknown as Record<string, unknown>)[SELF_INSTRUMENTED_FLAG] === true
+      )
+        continue;
       if (isNativeFunction(fn)) continue;
 
       const desc = checkOwnAndPrototype(entry.obj, entry.prop);

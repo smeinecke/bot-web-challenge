@@ -569,6 +569,53 @@ describe('browser checks', () => {
       }
     });
 
+    it('self-tagged console instrumentation is not reported', async () => {
+      const original = console.log;
+      const tagged = makeNonNativeFn() as Record<string, unknown> & (() => void);
+      tagged.__bwcSelfInstrumentation = true;
+      Object.defineProperty(console, 'log', { value: tagged, configurable: true, writable: true });
+      const fakeWindow = makeFakeWindow(new Set());
+      const cleanup = withFakeIframe(fakeWindow);
+
+      try {
+        const result = await checkRuntimeAPIIntegrity();
+        if (result !== false) {
+          expect(
+            (result.mainOnly as Array<{ id: string }>).some((m) => m.id === 'console.log')
+          ).toBe(false);
+        }
+      } finally {
+        Object.defineProperty(console, 'log', { value: original, configurable: true, writable: true });
+        cleanup();
+      }
+    });
+
+    it('self-tag on a high-value API does not suppress reporting', async () => {
+      const originalWorker = window.Worker;
+      const tagged = makeNonNativeFn() as Record<string, unknown> & (() => void);
+      tagged.__bwcSelfInstrumentation = true;
+      (window as Record<string, unknown>).Worker = tagged;
+      const fakeWindow = makeFakeWindow(new Set());
+      const cleanup = withFakeIframe(fakeWindow);
+
+      try {
+        const result = await checkRuntimeAPIIntegrity();
+        expect(result).not.toBe(false);
+        if (result !== false) {
+          expect(
+            (result.mainOnly as Array<{ id: string }>).some((m) => m.id === 'window.Worker')
+          ).toBe(true);
+        }
+      } finally {
+        if (originalWorker) {
+          (window as Record<string, unknown>).Worker = originalWorker;
+        } else {
+          delete (window as Record<string, unknown>).Worker;
+        }
+        cleanup();
+      }
+    });
+
     it('a non-native API in both main and pristine iframe is medium evidence', async () => {
       const original = console.log;
       Object.defineProperty(console, 'log', { value: makeNonNativeFn(), configurable: true, writable: true });
