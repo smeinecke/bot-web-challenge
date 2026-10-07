@@ -124,6 +124,26 @@ describe('cross-realm consistency engine', () => {
     expect(inconclusive).toBeDefined();
   });
 
+  it('a realm without WebGL support is skipped, not mismatched (Safari shared worker)', () => {
+    const snapshots: RealmSnapshot[] = [
+      { realm: 'main', values: { 'webgl:vendorRenderer': { vendor: 'Apple Inc.', renderer: 'Apple GPU' } } },
+      { realm: 'shared-worker', values: { 'webgl:vendorRenderer': { _notApplicable: true } } },
+    ];
+    const { mismatches, probeErrors } = compareSnapshots(snapshots);
+    expect(mismatches).toHaveLength(0);
+    expect(probeErrors).toHaveLength(0);
+  });
+
+  it('different WebGL vendor/renderer across realms still mismatches', () => {
+    const snapshots: RealmSnapshot[] = [
+      { realm: 'main', values: { 'webgl:vendorRenderer': { vendor: 'Apple Inc.', renderer: 'Apple GPU' } } },
+      { realm: 'shared-worker', values: { 'webgl:vendorRenderer': { vendor: 'Google Inc.', renderer: 'SwiftShader' } } },
+    ];
+    const { mismatches } = compareSnapshots(snapshots);
+    expect(mismatches).toHaveLength(1);
+    expect(mismatches[0].probe.id).toBe('webgl:vendorRenderer');
+  });
+
   it('SharedWorker unsupported is not a bot finding', async () => {
     const snapshot = await collectSharedWorkerObservations();
     expect(snapshot.inconclusive).toBe(true);

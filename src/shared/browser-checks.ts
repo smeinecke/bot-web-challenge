@@ -892,10 +892,10 @@ export function checkHighHardwareConcurrency(): { cores: number; threshold: numb
     return { notSupported: true };
   }
 
-  if (cores > 16) {
+  if (cores > 32) {
     return {
       cores,
-      threshold: 16,
+      threshold: 32,
       description: `${cores} CPU cores detected (high for consumer device) - possible VM/cloud environment`
     };
   }

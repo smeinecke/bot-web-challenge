@@ -66,16 +66,18 @@ function defaultCompare(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+// null is a comparable value in the engine, so expressions must distinguish
+// "cannot measure" (_notApplicable / _error) from an observed fingerprint.
 const WEBGL_DOM_EXPR = `(() => {
   try {
     const canvas = document.createElement('canvas');
     const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
-    if (!gl) return null;
+    if (!gl) return { _notApplicable: true };
     const ext = gl.getExtension('WEBGL_debug_renderer_info');
-    if (!ext) return null;
+    if (!ext) return { _notApplicable: true };
     return { vendor: gl.getParameter(ext.UNMASKED_VENDOR_WEBGL), renderer: gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) };
   } catch (e) {
-    return null;
+    return { _error: e.message };
   }
 })()`;
 
@@ -84,9 +86,9 @@ const WEBGL_OFFSCREEN_EXPR = `(() => {
     if (typeof OffscreenCanvas === 'undefined') return { _notApplicable: true };
     const canvas = new OffscreenCanvas(1, 1);
     const gl = canvas.getContext('webgl');
-    if (!gl) return null;
+    if (!gl) return { _notApplicable: true };
     const ext = gl.getExtension('WEBGL_debug_renderer_info');
-    if (!ext) return null;
+    if (!ext) return { _notApplicable: true };
     return { vendor: gl.getParameter(ext.UNMASKED_VENDOR_WEBGL), renderer: gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) };
   } catch (e) {
     return { _error: e.message };
@@ -98,7 +100,7 @@ const INTL_LOCALE_TZ_EXPR = `(() => {
     const opts = Intl.DateTimeFormat().resolvedOptions();
     return { locale: opts.locale, timeZone: opts.timeZone };
   } catch (e) {
-    return null;
+    return { _error: e.message };
   }
 })()`;
 
@@ -132,7 +134,7 @@ const NAVIGATOR_TAG_EXPR = `(() => {
   try {
     return Object.prototype.toString.call(navigator);
   } catch (e) {
-    return null;
+    return { _error: e.message };
   }
 })()`;
 
